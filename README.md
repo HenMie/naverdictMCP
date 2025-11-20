@@ -67,6 +67,31 @@ pip install -e ".[dev]"
 poetry install
 ```
 
+## 🐳 Docker 部署
+
+### 使用 Docker Compose (推荐)
+
+```bash
+# 启动服务
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
+
+# 停止服务
+docker-compose down
+```
+
+### 使用 Docker 构建和运行
+
+```bash
+# 构建镜像
+docker build -t naver-dict-mcp .
+
+# 运行容器
+docker run -d -p 8000:8000 --name naver-dict-mcp naver-dict-mcp
+```
+
 ## ⚙️ 配置
 
 ### 环境变量
