@@ -3,6 +3,7 @@
 from fastmcp import FastMCP
 import sys
 import os
+import json
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -24,12 +25,20 @@ async def _search_word_impl(word: str, dict_type: DictType = "ko-zh") -> str:
         dict_type: Dictionary type - "ko-zh" for Korean-Chinese or "ko-en" for Korean-English
         
     Returns:
-        Formatted dictionary results including word, pronunciation, meanings, and examples
+        JSON formatted dictionary results including word, pronunciation, meanings, and examples
     """
     async with NaverClient() as client:
         data = await client.search(word, dict_type)
         results = parse_search_results(data)
-        return format_results(results)
+        
+        # Return JSON formatted results
+        return json.dumps({
+            "success": True,
+            "word": word,
+            "dict_type": dict_type,
+            "count": len(results),
+            "results": results
+        }, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
@@ -42,7 +51,22 @@ async def search_word(word: str, dict_type: DictType = "ko-zh") -> str:
         dict_type: Dictionary type - "ko-zh" for Korean-Chinese or "ko-en" for Korean-English
         
     Returns:
-        Formatted dictionary results including word, pronunciation, meanings, and examples
+        JSON formatted string containing dictionary results with the following structure:
+        {
+            "success": true,
+            "word": "searched word",
+            "dict_type": "ko-zh or ko-en",
+            "count": number of results,
+            "results": [
+                {
+                    "word": "word/phrase",
+                    "pronunciation": "pronunciation",
+                    "meanings": ["meaning1", "meaning2", ...],
+                    "examples": ["example1", "example2", ...]
+                },
+                ...
+            ]
+        }
     """
     return await _search_word_impl(word, dict_type)
 
