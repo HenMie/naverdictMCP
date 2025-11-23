@@ -22,8 +22,8 @@ COPY pyproject.toml README.md ./
 # 复制源代码
 COPY src/ src/
 
-# 构建 wheel 包
-RUN pip wheel --no-cache-dir --no-deps --wheel-dir /build/wheels .
+# 构建 wheel 包（包括所有依赖）
+RUN pip wheel --no-cache-dir --wheel-dir /build/wheels .
 
 # ==============================================================================
 # Stage 2: Runtime - 运行时环境
