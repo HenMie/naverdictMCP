@@ -68,7 +68,10 @@ class TestSearchWordTool:
             
             result = await _search_word_impl("不存在的词")
             
-            assert "未找到相关结果" in result
+            # Verify it returns valid JSON with empty results
+            assert '"success": true' in result
+            assert '"count": 0' in result
+            assert '"results": []' in result
     
     @pytest.mark.asyncio
     async def test__search_word_impl_client_error(self):
