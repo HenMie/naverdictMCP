@@ -54,9 +54,10 @@ htmlcov/
 .pre-commit-config.yaml
 
 # Documentation
-*.md
 docs/
 OPTIMIZATION_*.md
+# 保留 README.md 用于构建
+!README.md
 
 # Development files
 .env

@@ -50,3 +50,4 @@ class TestLogger:
         
         assert "Test message" in caplog.text
 
+
