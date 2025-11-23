@@ -1,12 +1,22 @@
 """Tests for MCP server module."""
 
 import pytest
+import json
+import httpx
 from unittest.mock import AsyncMock, patch, MagicMock
 from src.server import _search_word_impl
+from src.client import ValidationError
+from src.cache import cache
+from src.metrics import metrics
 
 
 class TestSearchWordTool:
     """Tests for the _search_word_impl MCP tool."""
+    
+    def setup_method(self):
+        """Clear cache and metrics before each test."""
+        cache.clear()
+        metrics.reset()
     
     @pytest.mark.asyncio
     async def test__search_word_impl_success(self, sample_api_response):
@@ -74,13 +84,102 @@ class TestSearchWordTool:
             assert '"results": []' in result
     
     @pytest.mark.asyncio
-    async def test__search_word_impl_client_error(self):
-        """Test handling of client errors."""
+    async def test__search_word_impl_validation_error(self):
+        """Test handling of validation errors."""
         with patch("src.server.NaverClient") as mock_client_class:
             mock_client = AsyncMock()
-            mock_client.search.side_effect = Exception("API Error")
+            mock_client.search.side_effect = ValidationError("搜索词不能为空")
             mock_client_class.return_value.__aenter__.return_value = mock_client
             mock_client_class.return_value.__aexit__.return_value = None
             
-            with pytest.raises(Exception, match="API Error"):
-                await _search_word_impl("테스트")
+            result = await _search_word_impl("")
+            result_dict = json.loads(result)
+            
+            assert result_dict["success"] is False
+            assert result_dict["error_type"] == "validation"
+            assert "验证" in result_dict["error"]
+    
+    @pytest.mark.asyncio
+    async def test__search_word_impl_timeout_error(self):
+        """Test handling of timeout errors."""
+        with patch("src.server.NaverClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.search.side_effect = httpx.TimeoutException("Request timeout")
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            mock_client_class.return_value.__aexit__.return_value = None
+            
+            result = await _search_word_impl("테스트")
+            result_dict = json.loads(result)
+            
+            assert result_dict["success"] is False
+            assert result_dict["error_type"] == "timeout"
+            assert "超时" in result_dict["error"]
+    
+    @pytest.mark.asyncio
+    async def test__search_word_impl_http_error(self):
+        """Test handling of HTTP errors."""
+        with patch("src.server.NaverClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 404
+            mock_client.search.side_effect = httpx.HTTPStatusError(
+                "404 Not Found",
+                request=MagicMock(),
+                response=mock_response
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            mock_client_class.return_value.__aexit__.return_value = None
+            
+            result = await _search_word_impl("테스트")
+            result_dict = json.loads(result)
+            
+            assert result_dict["success"] is False
+            assert result_dict["error_type"] == "http_error"
+            assert "404" in result_dict["error"] or "未找到" in result_dict["error"]
+    
+    @pytest.mark.asyncio
+    async def test__search_word_impl_network_error(self):
+        """Test handling of network errors."""
+        with patch("src.server.NaverClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.search.side_effect = httpx.ConnectError("Connection failed")
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            mock_client_class.return_value.__aexit__.return_value = None
+            
+            result = await _search_word_impl("테스트")
+            result_dict = json.loads(result)
+            
+            assert result_dict["success"] is False
+            assert result_dict["error_type"] == "network_error"
+            assert "网络" in result_dict["error"]
+    
+    @pytest.mark.asyncio
+    async def test__search_word_impl_parse_error(self):
+        """Test handling of parse errors."""
+        with patch("src.server.NaverClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.search.side_effect = KeyError("missing_key")
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            mock_client_class.return_value.__aexit__.return_value = None
+            
+            result = await _search_word_impl("테스트")
+            result_dict = json.loads(result)
+            
+            assert result_dict["success"] is False
+            assert result_dict["error_type"] == "parse_error"
+            assert "解析" in result_dict["error"]
+    
+    @pytest.mark.asyncio
+    async def test__search_word_impl_unknown_error(self):
+        """Test handling of unknown errors."""
+        with patch("src.server.NaverClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.search.side_effect = RuntimeError("Unexpected error")
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            mock_client_class.return_value.__aexit__.return_value = None
+            
+            result = await _search_word_impl("테스트")
+            result_dict = json.loads(result)
+            
+            assert result_dict["success"] is False
+            assert result_dict["error_type"] == "unknown"

@@ -3,7 +3,7 @@
 import pytest
 import httpx
 from unittest.mock import AsyncMock, patch, MagicMock
-from src.client import NaverClient, DICT_CODE_MAP
+from src.client import NaverClient, DICT_CODE_MAP, ValidationError
 
 
 class TestNaverClient:
@@ -112,3 +112,68 @@ class TestNaverClient:
         """Test dictionary type to code mapping."""
         assert DICT_CODE_MAP["ko-zh"] == ("kozh", "zh_CN")
         assert DICT_CODE_MAP["ko-en"] == ("koen", "en")
+
+
+class TestInputValidation:
+    """Tests for input validation in NaverClient."""
+    
+    @pytest.mark.asyncio
+    async def test_empty_word_validation(self):
+        """Test that empty words are rejected."""
+        async with NaverClient() as client:
+            with pytest.raises(ValidationError, match="搜索词不能为空"):
+                await client.search("")
+    
+    @pytest.mark.asyncio
+    async def test_whitespace_only_word_validation(self):
+        """Test that whitespace-only words are rejected."""
+        async with NaverClient() as client:
+            with pytest.raises(ValidationError, match="搜索词不能只包含空格"):
+                await client.search("   ")
+    
+    @pytest.mark.asyncio
+    async def test_word_too_long_validation(self):
+        """Test that overly long words are rejected."""
+        long_word = "a" * 101  # 101 characters
+        
+        async with NaverClient() as client:
+            with pytest.raises(ValidationError, match="搜索词过长"):
+                await client.search(long_word)
+    
+    @pytest.mark.asyncio
+    async def test_word_max_length_allowed(self):
+        """Test that maximum allowed length passes validation."""
+        max_word = "a" * 100  # Exactly 100 characters
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"searchResultMap": {}}
+        
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_response
+            
+            async with NaverClient() as client:
+                # Should not raise
+                await client.search(max_word)
+    
+    @pytest.mark.asyncio
+    async def test_word_whitespace_trimming(self):
+        """Test that leading/trailing whitespace is trimmed."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"searchResultMap": {}}
+        
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_response
+            
+            async with NaverClient() as client:
+                await client.search("  안녕  ")
+            
+            # Check that the trimmed word was used
+            call_args = mock_get.call_args
+            params = call_args[1]["params"]
+            assert params["query"] == "안녕"
+    
+    @pytest.mark.asyncio
+    async def test_invalid_dict_type(self):
+        """Test that invalid dictionary types are rejected."""
+        async with NaverClient() as client:
+            with pytest.raises(ValidationError, match="无效的字典类型"):
+                await client.search("안녕", "invalid-type")  # type: ignore
