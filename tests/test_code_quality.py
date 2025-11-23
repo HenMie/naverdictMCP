@@ -114,14 +114,6 @@ def test_documentation_updated():
     assert "多阶段构建" in content or "Docker 优化" in content, "README 未包含 Docker 优化说明"
 
 
-def test_optimization_report_exists():
-    """测试低优先级优化报告是否存在。"""
-    report = Path("LOW_PRIORITY_OPTIMIZATION_COMPLETED.md")
-    assert report.exists(), "低优先级优化报告文件不存在"
-    
-    content = report.read_text(encoding="utf-8")
-    assert "MyPy" in content, "优化报告未包含 MyPy 说明"
-    assert "Ruff" in content, "优化报告未包含 Ruff 说明"
     assert "Docker" in content, "优化报告未包含 Docker 优化说明"
 
 

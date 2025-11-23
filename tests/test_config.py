@@ -3,7 +3,21 @@
 import pytest
 import os
 from unittest.mock import patch
+from importlib import reload
+import src.config
 from src.config import Config, ConfigError
+
+
+@pytest.fixture
+def reload_config_module():
+    """Fixture to reload config module and restore it after test."""
+    yield
+    # Reload module after test to restore original state
+    reload(src.config)
+    # Re-import to ensure references are updated
+    import sys
+    if 'src.config' in sys.modules:
+        reload(sys.modules['src.config'])
 
 
 class TestConfig:
@@ -33,7 +47,7 @@ class TestConfig:
         "HTTP_TIMEOUT": "60.0",
         "LOG_LEVEL": "DEBUG"
     })
-    def test_environment_variable_override(self):
+    def test_environment_variable_override(self, reload_config_module):
         """Test that environment variables override defaults."""
         # Need to reload the module to pick up new env vars
         from importlib import reload
@@ -53,23 +67,21 @@ class TestConfigValidation:
     
     def test_invalid_port_too_low(self):
         """Test that port number validation catches values too low."""
-        config = Config()
+        config = Config(validate=False)
         config.SERVER_PORT = 0
-        
-        with pytest.raises(ConfigError):
+        with pytest.raises(src.config.ConfigError):
             config.validate()
     
     def test_invalid_port_too_high(self):
         """Test that port number validation catches values too high."""
-        config = Config()
+        config = Config(validate=False)
         config.SERVER_PORT = 70000
-        
-        with pytest.raises(ConfigError):
+        with pytest.raises(src.config.ConfigError):
             config.validate()
     
     def test_valid_port_range(self):
         """Test that valid port numbers pass validation."""
-        config = Config()
+        config = Config(validate=False)
         
         # Test boundary values
         config.SERVER_PORT = 1
@@ -83,31 +95,28 @@ class TestConfigValidation:
     
     def test_invalid_timeout_zero(self):
         """Test that zero timeout is rejected."""
-        config = Config()
+        config = Config(validate=False)
         config.HTTP_TIMEOUT = 0
-        
-        with pytest.raises(ConfigError):
+        with pytest.raises(src.config.ConfigError):
             config.validate()
     
     def test_invalid_timeout_negative(self):
         """Test that negative timeout is rejected."""
-        config = Config()
+        config = Config(validate=False)
         config.HTTP_TIMEOUT = -10
-        
-        with pytest.raises(ConfigError):
+        with pytest.raises(src.config.ConfigError):
             config.validate()
     
     def test_timeout_warning_too_long(self):
         """Test that very long timeouts trigger a warning."""
-        config = Config()
+        config = Config(validate=False)
         config.HTTP_TIMEOUT = 400
-        
-        with pytest.raises(ConfigError):
+        with pytest.raises(src.config.ConfigError):
             config.validate()
     
     def test_valid_timeout_range(self):
         """Test that reasonable timeout values pass validation."""
-        config = Config()
+        config = Config(validate=False)
         
         config.HTTP_TIMEOUT = 1.0
         config.validate()  # Should not raise
@@ -120,15 +129,14 @@ class TestConfigValidation:
     
     def test_invalid_log_level(self):
         """Test that invalid log levels are rejected."""
-        config = Config()
+        config = Config(validate=False)
         config.LOG_LEVEL = "INVALID"
-        
-        with pytest.raises(ConfigError):
+        with pytest.raises(src.config.ConfigError):
             config.validate()
     
     def test_valid_log_levels(self):
         """Test that all valid log levels pass validation."""
-        config = Config()
+        config = Config(validate=False)
         
         for level in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
             config.LOG_LEVEL = level
@@ -136,15 +144,14 @@ class TestConfigValidation:
     
     def test_invalid_url_format(self):
         """Test that invalid URL formats are rejected."""
-        config = Config()
+        config = Config(validate=False)
         config.NAVER_BASE_URL = "not-a-valid-url"
-        
-        with pytest.raises(ConfigError):
+        with pytest.raises(src.config.ConfigError):
             config.validate()
     
     def test_valid_url_formats(self):
         """Test that valid URL formats pass validation."""
-        config = Config()
+        config = Config(validate=False)
         
         config.NAVER_BASE_URL = "http://example.com"
         config.validate()  # Should not raise

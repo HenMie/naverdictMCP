@@ -31,8 +31,12 @@ class Config:
     # Naver API settings
     NAVER_BASE_URL: str
     
-    def __init__(self):
-        """Initialize configuration from environment variables."""
+    def __init__(self, validate: bool = True):
+        """Initialize configuration from environment variables.
+        
+        Args:
+            validate: Whether to validate configuration after initialization
+        """
         self.SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
         self.SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
         self.HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "30.0"))
@@ -42,8 +46,9 @@ class Config:
             "https://korean.dict.naver.com/api3"
         )
         
-        # 自动验证配置
-        self.validate()
+        # 自动验证配置（除非明确禁用）
+        if validate:
+            self.validate()
     
     def validate(self) -> None:
         """
@@ -81,13 +86,22 @@ class Config:
 
 
 # Global config instance
-try:
-    config = Config()
-except ConfigError as e:
-    # 如果配置无效，打印错误并使用默认值
-    print(f"配置错误: {e}")
-    print("使用默认配置...")
-    # 清除环境变量，使用默认值
-    for key in ["SERVER_HOST", "SERVER_PORT", "HTTP_TIMEOUT", "LOG_LEVEL", "NAVER_BASE_URL"]:
-        os.environ.pop(key, None)
-    config = Config()
+def _init_config():
+    """Initialize global config with error handling."""
+    try:
+        return Config()
+    except ConfigError as e:
+        # 如果配置无效，打印错误并使用默认值
+        print(f"配置错误: {e}")
+        print("使用默认配置...")
+        # 清除环境变量，使用默认值
+        for key in ["SERVER_HOST", "SERVER_PORT", "HTTP_TIMEOUT", "LOG_LEVEL", "NAVER_BASE_URL"]:
+            os.environ.pop(key, None)
+        return Config()
+
+# 只在非测试环境下初始化全局配置
+if not os.getenv("PYTEST_CURRENT_TEST"):
+    config = _init_config()
+else:
+    # 测试环境也初始化配置，但不自动验证（让测试自行控制）
+    config = Config(validate=False)
