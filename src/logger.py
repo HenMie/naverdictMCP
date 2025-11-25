@@ -1,4 +1,7 @@
-"""Logging configuration for the application."""
+"""应用日志配置模块。
+
+提供统一的日志配置和格式化。
+"""
 
 import logging
 import sys
@@ -10,14 +13,14 @@ def setup_logger(
     level: Optional[str] = None
 ) -> logging.Logger:
     """
-    Setup application logger with consistent formatting.
+    设置应用日志器，使用统一的格式。
     
     Args:
-        name: Logger name
-        level: Log level (overrides config if provided)
+        name: 日志器名称
+        level: 日志级别（如果提供则覆盖配置）
         
     Returns:
-        Configured logger instance
+        配置好的日志器实例
     """
     logger = logging.getLogger(name)
     
@@ -48,7 +51,5 @@ def setup_logger(
     return logger
 
 
-# 全局 logger 实例
+# 全局日志器实例
 logger = setup_logger()
-
-

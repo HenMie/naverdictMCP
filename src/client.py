@@ -1,13 +1,19 @@
-"""HTTP client for fetching Naver Dictionary pages."""
+"""Naver 辞典 HTTP 客户端模块。
+
+提供异步 HTTP 客户端，用于获取 Naver 辞典 API 数据。
+"""
+
+from typing import Any, Dict, Literal, Optional
 
 import httpx
-from typing import Literal, Dict, Any, Optional
+
 from .config import config
 from .logger import logger
 
+# 字典类型定义
 DictType = Literal["ko-zh", "ko-en"]
 
-# Mapping of our dict types to Naver's API codes
+# 字典类型到 Naver API 代码的映射
 DICT_CODE_MAP = {
     "ko-zh": ("kozh", "zh_CN"),
     "ko-en": ("koen", "en"),
@@ -15,19 +21,21 @@ DICT_CODE_MAP = {
 
 
 class ValidationError(Exception):
-    """Input validation error."""
+    """输入验证错误。"""
     pass
 
 
 class NaverClientPool:
-    """Singleton HTTP client pool for connection reuse."""
+    """HTTP 客户端连接池单例。
+    
+    使用单例模式管理共享的 HTTP 连接池，提供连接复用以提升性能。
+    """
     
     _instance: Optional["NaverClientPool"] = None
     _client: Optional[httpx.AsyncClient] = None
-    _ref_count: int = 0
     
-    def __new__(cls):
-        """Ensure only one instance exists (singleton pattern)."""
+    def __new__(cls) -> "NaverClientPool":
+        """确保只存在一个实例（单例模式）。"""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             logger.debug("创建 NaverClientPool 单例实例")
@@ -35,10 +43,10 @@ class NaverClientPool:
     
     async def get_client(self) -> httpx.AsyncClient:
         """
-        Get or create shared HTTP client.
+        获取或创建共享的 HTTP 客户端。
         
         Returns:
-            Shared httpx.AsyncClient instance
+            共享的 httpx.AsyncClient 实例
         """
         if self._client is None or self._client.is_closed:
             logger.info("创建新的 HTTP 客户端连接池")
@@ -59,34 +67,41 @@ class NaverClientPool:
         return self._client
     
     async def close(self) -> None:
-        """Close the shared client."""
+        """关闭共享的客户端连接。"""
         if self._client and not self._client.is_closed:
             logger.info("关闭 HTTP 客户端连接池")
             await self._client.aclose()
             self._client = None
 
 
-# Global client pool instance
+# 全局客户端连接池实例
 client_pool = NaverClientPool()
 
 
 class NaverClient:
-    """Async HTTP client for Naver Dictionary API using connection pool."""
+    """Naver 辞典 API 异步客户端。
     
-    def __init__(self):
-        """Initialize the client."""
-        self.client: httpx.AsyncClient | None = None
+    使用连接池提供高效的 HTTP 请求能力。
+    
+    使用示例:
+        async with NaverClient() as client:
+            data = await client.search("안녕하세요", "ko-zh")
+    """
+    
+    def __init__(self) -> None:
+        """初始化客户端。"""
+        self.client: Optional[httpx.AsyncClient] = None
         self.base_url = config.NAVER_BASE_URL
-        self._use_pool = True  # Use connection pool by default
+        self._use_pool = True  # 默认使用连接池
     
-    async def __aenter__(self):
-        """Async context manager entry."""
+    async def __aenter__(self) -> "NaverClient":
+        """异步上下文管理器入口。"""
         if self._use_pool:
-            # Use shared connection pool
+            # 使用共享连接池
             self.client = await client_pool.get_client()
             logger.debug("使用共享连接池")
         else:
-            # Create dedicated client (for testing)
+            # 创建独立客户端（用于测试）
             self.client = httpx.AsyncClient(
                 timeout=config.HTTP_TIMEOUT,
                 follow_redirects=True,
@@ -99,31 +114,36 @@ class NaverClient:
             logger.debug("使用独立客户端连接")
         return self
     
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit."""
+    async def __aexit__(
+        self, 
+        exc_type: Optional[type], 
+        exc_val: Optional[BaseException], 
+        exc_tb: Optional[object]
+    ) -> None:
+        """异步上下文管理器出口。"""
         if not self._use_pool and self.client:
-            # Only close if not using pool
+            # 只有非连接池模式才关闭客户端
             await self.client.aclose()
     
     async def search(self, word: str, dict_type: DictType = "ko-zh") -> Dict[str, Any]:
         """
-        Search for a word in the specified dictionary.
+        在指定字典中搜索单词。
         
         Args:
-            word: The word to search for
-            dict_type: Dictionary type ("ko-zh" or "ko-en")
+            word: 要搜索的单词
+            dict_type: 字典类型（"ko-zh" 或 "ko-en"）
             
         Returns:
-            JSON response from the API as a dictionary
+            API 返回的 JSON 响应（字典格式）
             
         Raises:
-            RuntimeError: If client not initialized
-            ValidationError: If input validation fails
-            httpx.HTTPStatusError: If HTTP request fails
-            httpx.TimeoutException: If request times out
+            RuntimeError: 客户端未初始化时抛出
+            ValidationError: 输入验证失败时抛出
+            httpx.HTTPStatusError: HTTP 请求失败时抛出
+            httpx.TimeoutException: 请求超时时抛出
         """
         if not self.client:
-            raise RuntimeError("Client not initialized. Use 'async with' context manager.")
+            raise RuntimeError("客户端未初始化。请使用 'async with' 上下文管理器。")
         
         # 输入验证
         if not word:
@@ -163,7 +183,7 @@ class NaverClient:
             response.raise_for_status()
             logger.debug(f"API 请求成功: {url}")
             return response.json()
-        except httpx.TimeoutException as e:
+        except httpx.TimeoutException:
             logger.error(f"请求超时: {url}", exc_info=True)
             raise
         except httpx.HTTPStatusError as e:

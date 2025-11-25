@@ -1,44 +1,54 @@
-"""Rate limiting for API endpoints."""
+"""API 限流模块。
+
+基于令牌桶算法实现请求限流，防止 API 滥用。
+"""
 
 import time
-from typing import Dict, Tuple
 from collections import defaultdict
+from typing import Dict, Tuple
+
 from .logger import logger
 
 
 class RateLimiter:
     """
-    Token bucket rate limiter for API endpoints.
+    基于令牌桶算法的限流器。
     
-    Uses token bucket algorithm to limit requests per time window.
-    Each client gets a bucket with N tokens that refill over time.
+    使用令牌桶算法限制每个时间窗口内的请求数。
+    每个客户端有一个独立的令牌桶，令牌会随时间自动补充。
+    
+    算法说明:
+        - 每个客户端初始有 N 个令牌
+        - 每次请求消耗 1 个令牌
+        - 令牌以固定速率补充（每秒 refill_rate 个）
+        - 令牌数量上限为 requests_per_minute
     """
     
-    def __init__(self, requests_per_minute: int = 60):
+    def __init__(self, requests_per_minute: int = 60) -> None:
         """
-        Initialize rate limiter.
+        初始化限流器。
         
         Args:
-            requests_per_minute: Maximum requests per minute per client
+            requests_per_minute: 每分钟最大请求数（每个客户端）
         """
         self.requests_per_minute = requests_per_minute
         # 格式: {client_id: (last_check_time, available_tokens)}
         self.buckets: Dict[str, Tuple[float, int]] = defaultdict(
             lambda: (time.time(), requests_per_minute)
         )
-        self.refill_rate = requests_per_minute / 60.0  # tokens per second
+        self.refill_rate = requests_per_minute / 60.0  # 每秒补充的令牌数
         
         logger.info(f"限流器初始化: {requests_per_minute} 请求/分钟")
     
     def is_allowed(self, client_id: str) -> bool:
         """
-        Check if request is allowed for the client.
+        检查该客户端的请求是否被允许。
         
         Args:
-            client_id: Client identifier (e.g., IP address or user ID)
+            client_id: 客户端标识符（如 IP 地址或用户 ID）
             
         Returns:
-            True if request is allowed, False if rate limit exceeded
+            True 表示允许请求，False 表示超过限流
         """
         current_time = time.time()
         last_check, tokens = self.buckets[client_id]
@@ -63,13 +73,13 @@ class RateLimiter:
     
     def get_remaining_tokens(self, client_id: str) -> int:
         """
-        Get remaining tokens for a client.
+        获取客户端的剩余令牌数。
         
         Args:
-            client_id: Client identifier
+            client_id: 客户端标识符
             
         Returns:
-            Number of remaining tokens
+            剩余令牌数
         """
         if client_id not in self.buckets:
             return self.requests_per_minute
@@ -88,17 +98,17 @@ class RateLimiter:
     
     def reset_client(self, client_id: str) -> None:
         """
-        Reset rate limit for a specific client.
+        重置指定客户端的限流状态。
         
         Args:
-            client_id: Client identifier
+            client_id: 客户端标识符
         """
         if client_id in self.buckets:
             del self.buckets[client_id]
             logger.info(f"重置限流: client={client_id}")
     
     def clear_all(self) -> None:
-        """Clear all rate limit data."""
+        """清空所有限流数据。"""
         self.buckets.clear()
         logger.info("清空所有限流数据")
 
@@ -106,4 +116,3 @@ class RateLimiter:
 # 全局限流器实例
 # 默认每分钟 60 个请求（平均每秒 1 个）
 rate_limiter = RateLimiter(requests_per_minute=60)
-

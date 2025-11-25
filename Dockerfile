@@ -50,9 +50,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 RUN chown -R appuser:appuser /app
 USER appuser
 
-# 健康检查
+# 健康检查（检查端口是否可连接）
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8000/health', timeout=5.0)" || exit 1
+    CMD python -c "import socket; s=socket.socket(); s.settimeout(5); s.connect(('localhost', 8000)); s.close()" || exit 1
 
 # 暴露端口
 EXPOSE 8000

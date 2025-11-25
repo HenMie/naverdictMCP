@@ -1,14 +1,24 @@
-"""Application metrics for monitoring and performance tracking."""
+"""应用监控指标模块。
 
-import time
+提供请求统计、缓存统计、延迟分析等性能监控功能。
+"""
+
 from dataclasses import dataclass, field
-from typing import Dict, List, Any
+from typing import Any, Dict, List
+
 from .logger import logger
 
 
 @dataclass
 class Metrics:
-    """Application metrics collector."""
+    """应用指标收集器。
+    
+    收集和统计以下指标:
+        - 请求统计：总数、成功数、失败数
+        - 缓存统计：命中数、未命中数
+        - 延迟统计：总延迟、各端点延迟
+        - 错误统计：按类型分类的错误计数
+    """
     
     total_requests: int = 0
     successful_requests: int = 0
@@ -21,12 +31,12 @@ class Metrics:
     
     def record_request(self, success: bool, latency: float, endpoint: str = "search") -> None:
         """
-        Record a request with its result and latency.
+        记录一次请求及其结果和延迟。
         
         Args:
-            success: Whether the request succeeded
-            latency: Request latency in seconds
-            endpoint: The endpoint name
+            success: 请求是否成功
+            latency: 请求延迟（秒）
+            endpoint: 端点名称
         """
         self.total_requests += 1
         if success:
@@ -40,28 +50,28 @@ class Metrics:
             self.request_times[endpoint] = []
         self.request_times[endpoint].append(latency)
         
-        # Keep only last 100 request times per endpoint to prevent memory growth
+        # 每个端点只保留最近 100 条记录，防止内存增长
         if len(self.request_times[endpoint]) > 100:
             self.request_times[endpoint] = self.request_times[endpoint][-100:]
         
         logger.debug(f"记录请求: endpoint={endpoint}, success={success}, latency={latency:.3f}s")
     
     def record_cache_hit(self) -> None:
-        """Record a cache hit."""
+        """记录一次缓存命中。"""
         self.cache_hits += 1
         logger.debug(f"缓存命中记录: 总命中={self.cache_hits}")
     
     def record_cache_miss(self) -> None:
-        """Record a cache miss."""
+        """记录一次缓存未命中。"""
         self.cache_misses += 1
         logger.debug(f"缓存未命中记录: 总未命中={self.cache_misses}")
     
     def record_error(self, error_type: str) -> None:
         """
-        Record an error by type.
+        按类型记录错误。
         
         Args:
-            error_type: Type of error (validation, timeout, http_error, etc.)
+            error_type: 错误类型（validation、timeout、http_error 等）
         """
         if error_type not in self.error_counts:
             self.error_counts[error_type] = 0
@@ -70,10 +80,10 @@ class Metrics:
     
     def get_stats(self) -> Dict[str, Any]:
         """
-        Get current statistics.
+        获取当前统计信息。
         
         Returns:
-            Dictionary containing all metrics
+            包含所有指标的字典
         """
         avg_latency = (
             self.total_latency / self.total_requests 
@@ -90,8 +100,8 @@ class Metrics:
             if self.total_requests > 0 else 0
         )
         
-        # Calculate percentiles for each endpoint
-        endpoint_stats = {}
+        # 计算各端点的百分位延迟
+        endpoint_stats: Dict[str, Dict[str, Any]] = {}
         for endpoint, times in self.request_times.items():
             if times:
                 sorted_times = sorted(times)
@@ -120,7 +130,7 @@ class Metrics:
         }
     
     def reset(self) -> None:
-        """Reset all metrics to zero."""
+        """重置所有指标为零。"""
         logger.info("重置指标统计")
         self.total_requests = 0
         self.successful_requests = 0
@@ -132,7 +142,5 @@ class Metrics:
         self.error_counts.clear()
 
 
-# Global metrics instance
+# 全局指标实例
 metrics = Metrics()
-
-

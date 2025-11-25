@@ -1,41 +1,55 @@
-"""Configuration management for Naver Dictionary MCP server."""
+"""配置管理模块。
+
+提供应用配置管理，支持环境变量和配置验证。
+"""
 
 import os
 from typing import Literal
+
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# 从 .env 文件加载环境变量
 load_dotenv()
 
+# 日志级别类型
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
 
 class ConfigError(Exception):
-    """Configuration validation error."""
+    """配置验证错误。"""
     pass
 
 
 class Config:
-    """Application configuration with environment variable support and validation."""
+    """应用配置类，支持环境变量和验证。
     
-    # Server settings
+    配置项:
+        - SERVER_HOST: 服务器监听地址
+        - SERVER_PORT: 服务器端口
+        - HTTP_TIMEOUT: HTTP 请求超时时间
+        - LOG_LEVEL: 日志级别
+        - NAVER_BASE_URL: Naver API 基础 URL
+    """
+    
+    # 服务器设置
     SERVER_HOST: str
     SERVER_PORT: int
     
-    # HTTP client settings
+    # HTTP 客户端设置
     HTTP_TIMEOUT: float
     
-    # Logging settings
+    # 日志设置
     LOG_LEVEL: str
     
-    # Naver API settings
+    # Naver API 设置
     NAVER_BASE_URL: str
     
-    def __init__(self, validate: bool = True):
-        """Initialize configuration from environment variables.
+    def __init__(self, validate: bool = True) -> None:
+        """
+        从环境变量初始化配置。
         
         Args:
-            validate: Whether to validate configuration after initialization
+            validate: 是否在初始化后验证配置
         """
         self.SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
         self.SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
@@ -52,10 +66,10 @@ class Config:
     
     def validate(self) -> None:
         """
-        Validate configuration values.
+        验证配置值。
         
         Raises:
-            ConfigError: If any configuration value is invalid
+            ConfigError: 如果任何配置值无效
         """
         # 验证端口号
         if not 0 < self.SERVER_PORT < 65536:
@@ -81,13 +95,12 @@ class Config:
             raise ConfigError(f"无效的 URL 格式: {self.NAVER_BASE_URL}")
     
     def get_server_address(self) -> str:
-        """Get the full server address."""
+        """获取完整的服务器地址。"""
         return f"http://{self.SERVER_HOST}:{self.SERVER_PORT}"
 
 
-# Global config instance
-def _init_config():
-    """Initialize global config with error handling."""
+def _init_config() -> Config:
+    """初始化全局配置（带错误处理）。"""
     try:
         return Config()
     except ConfigError as e:
@@ -98,6 +111,7 @@ def _init_config():
         for key in ["SERVER_HOST", "SERVER_PORT", "HTTP_TIMEOUT", "LOG_LEVEL", "NAVER_BASE_URL"]:
             os.environ.pop(key, None)
         return Config()
+
 
 # 只在非测试环境下初始化全局配置
 if not os.getenv("PYTEST_CURRENT_TEST"):
