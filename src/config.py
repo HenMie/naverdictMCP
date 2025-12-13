@@ -1,15 +1,27 @@
 """配置管理模块。
 
 提供应用配置管理，支持环境变量和配置验证。
+
+注意：为保证测试稳定性，pytest 环境下不会自动读取本地 `.env` 文件，
+避免开发者机器上的环境配置影响测试结果。
 """
 
 import os
+import sys
 from typing import Literal
 
 from dotenv import load_dotenv
 
-# 从 .env 文件加载环境变量
-load_dotenv()
+
+def _is_running_tests() -> bool:
+    """判断当前是否运行在测试环境中。"""
+    # pytest 在运行期间会导入 pytest 包（包括收集阶段），可靠性高于 PYTEST_CURRENT_TEST
+    return "pytest" in sys.modules or os.getenv("PYTEST_CURRENT_TEST") is not None
+
+
+# 仅在非测试环境下从 .env 文件加载环境变量
+if not _is_running_tests():
+    load_dotenv()
 
 # 日志级别类型
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -114,8 +126,8 @@ def _init_config() -> Config:
 
 
 # 只在非测试环境下初始化全局配置
-if not os.getenv("PYTEST_CURRENT_TEST"):
+if not _is_running_tests():
     config = _init_config()
 else:
-    # 测试环境也初始化配置，但不自动验证（让测试自行控制）
+    # 测试环境初始化配置，但不自动验证（让测试自行控制）
     config = Config(validate=False)

@@ -3,9 +3,25 @@
 import pytest
 import time
 import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+
 from src.client import NaverClient
 from src.cache import TTLCache
 from src.metrics import Metrics
+
+
+@pytest.fixture(autouse=True)
+def mock_httpx_requests():
+    """屏蔽真实网络请求，避免性能/压力测试在本地或 CI 环境下不稳定。"""
+    mock_response = MagicMock()
+    mock_response.raise_for_status.return_value = None
+    mock_response.json.return_value = {
+        "searchResultMap": {"searchResultListMap": {"WORD": {"items": []}}}
+    }
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = mock_response
+        yield mock_get
 
 
 @pytest.mark.performance

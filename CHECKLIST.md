@@ -39,15 +39,6 @@
   - [x] 容错机制
   - [x] 性能提升：5-10 倍
 
-- [x] **指标查看接口** (`src/server.py::get_server_metrics`)
-  - [x] 实时监控
-  - [x] 详细统计
-  - [x] JSON 格式输出
-
-- [x] **缓存管理接口** (`src/server.py::clear_cache`)
-  - [x] 手动清理功能
-  - [x] 调试支持
-
 ### 测试增强
 
 - [x] **性能测试套件** (`tests/test_performance.py`)

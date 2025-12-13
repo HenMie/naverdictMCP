@@ -1,214 +1,94 @@
-"""Integration tests for MCP server over HTTP.
+"""Integration tests for MCP server (in-memory transport).
 
-This module contains integration tests that verify the MCP server's
-functionality when running in HTTP mode. These tests require the server
-to be running on http://127.0.0.1:8000.
+为了让测试在本地/CI 环境中稳定运行，这里的集成测试使用 FastMCP 的 in-memory transport，
+避免依赖端口、进程管理和外部网络。
 """
 
-import httpx
-import asyncio
+from __future__ import annotations
+
 import json
+from unittest.mock import AsyncMock, patch
+
 import pytest
+from fastmcp import Client
+
+from src.cache import cache
+from src.metrics import metrics
+from src.rate_limiter import rate_limiter
+from src.server import mcp
 
 
-def parse_sse_response(text: str) -> dict:
-    """Parse Server-Sent Events (SSE) response.
-    
-    Args:
-        text: Raw SSE response text
-        
-    Returns:
-        Parsed JSON data from the SSE response
-    """
-    lines = text.strip().split('\n')
-    data_lines = [line[6:] for line in lines if line.startswith('data: ')]
-    if data_lines:
-        return json.loads(data_lines[0])
-    return None
+def _tool_name(tool: object) -> str:
+    """兼容 Tool 对象或 dict 结构。"""
+    if hasattr(tool, "name"):
+        return getattr(tool, "name")
+    if isinstance(tool, dict):
+        return str(tool.get("name", ""))
+    return str(tool)
 
 
-class TestMCPIntegration:
-    """Integration tests for MCP server HTTP transport."""
-    
-    BASE_URL = "http://127.0.0.1:8000/mcp"
-    HEADERS = {
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream"
-    }
-    TIMEOUT = 30.0
-    
-    @pytest.mark.asyncio
-    async def test_initialize(self):
-        """Test MCP protocol initialization."""
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "test-client",
-                    "version": "1.0.0"
-                }
-            }
-        }
-        
-        async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
-            response = await client.post(self.BASE_URL, headers=self.HEADERS, json=payload)
-            
-            assert response.status_code == 200
-            data = parse_sse_response(response.text)
-            assert data is not None
-            assert 'error' not in data
-            assert 'result' in data
-    
-    @pytest.mark.asyncio
-    async def test_list_tools(self):
-        """Test listing available MCP tools."""
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/list",
-            "params": {}
-        }
-        
-        async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
-            response = await client.post(self.BASE_URL, headers=self.HEADERS, json=payload)
-            
-            assert response.status_code == 200
-            data = parse_sse_response(response.text)
-            assert data is not None
-            assert 'error' not in data
-            assert 'result' in data
-            assert 'tools' in data['result']
-            
-            # Verify search_word tool exists
-            tools = data['result']['tools']
-            tool_names = [tool['name'] for tool in tools]
-            assert 'search_word' in tool_names
-    
-    @pytest.mark.asyncio
-    async def test_search_word_korean_chinese(self):
-        """Test Korean-Chinese dictionary search."""
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": {
-                "name": "search_word",
-                "arguments": {
-                    "word": "안녕",
-                    "dict_type": "ko-zh"
-                }
-            }
-        }
-        
-        async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
-            response = await client.post(self.BASE_URL, headers=self.HEADERS, json=payload)
-            
-            assert response.status_code == 200
-            data = parse_sse_response(response.text)
-            assert data is not None
-            assert 'error' not in data
-            assert 'result' in data
-    
-    @pytest.mark.asyncio
-    async def test_search_word_korean_english(self):
-        """Test Korean-English dictionary search."""
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "tools/call",
-            "params": {
-                "name": "search_word",
-                "arguments": {
-                    "word": "학교",
-                    "dict_type": "ko-en"
-                }
-            }
-        }
-        
-        async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
-            response = await client.post(self.BASE_URL, headers=self.HEADERS, json=payload)
-            
-            assert response.status_code == 200
-            data = parse_sse_response(response.text)
-            assert data is not None
-            assert 'error' not in data
-            assert 'result' in data
-    
-    @pytest.mark.asyncio
-    async def test_search_word_default_dict_type(self):
-        """Test search with default dictionary type (should be ko-zh)."""
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 5,
-            "method": "tools/call",
-            "params": {
-                "name": "search_word",
-                "arguments": {
-                    "word": "사랑"
-                }
-            }
-        }
-        
-        async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
-            response = await client.post(self.BASE_URL, headers=self.HEADERS, json=payload)
-            
-            assert response.status_code == 200
-            data = parse_sse_response(response.text)
-            assert data is not None
-            assert 'error' not in data
-            assert 'result' in data
+@pytest.fixture
+async def mcp_client():
+    async with Client(mcp) as client:
+        yield client
 
 
-# Standalone test runner for manual testing
-async def run_integration_tests():
-    """Run integration tests manually without pytest."""
-    print("="*70)
-    print(" Naver Dictionary MCP 服务器集成测试")
-    print("="*70)
-    
-    test_suite = TestMCPIntegration()
-    tests = [
-        ("初始化 MCP 会话", test_suite.test_initialize),
-        ("列出可用工具", test_suite.test_list_tools),
-        ("查询韩中辞典 (안녕)", test_suite.test_search_word_korean_chinese),
-        ("查询韩英辞典 (학교)", test_suite.test_search_word_korean_english),
-        ("默认辞典类型 (사랑)", test_suite.test_search_word_default_dict_type),
-    ]
-    
-    results = []
-    for name, test_func in tests:
-        print(f"\n【测试】{name}")
-        print("-"*70)
-        try:
-            await test_func()
-            print("✅ 通过")
-            results.append((name, True))
-        except Exception as e:
-            print(f"❌ 失败: {e}")
-            results.append((name, False))
-    
-    # Print summary
-    print("\n" + "="*70)
-    print(" 测试总结")
-    print("="*70)
-    passed = sum(1 for _, result in results if result)
-    total = len(results)
-    print(f"\n总计: {passed}/{total} 测试通过 ({passed/total*100:.1f}%)\n")
-    
-    for test_name, result in results:
-        status = "✅ 通过" if result else "❌ 失败"
-        print(f"  {status} - {test_name}")
-    
-    print("\n" + "="*70)
-    return passed == total
+@pytest.fixture(autouse=True)
+def reset_global_state():
+    """确保测试之间互不影响（缓存/指标/限流都是全局单例）。"""
+    cache.clear()
+    metrics.reset()
+    rate_limiter.reset()
 
 
-if __name__ == "__main__":
-    print("提示: 确保 MCP 服务器正在运行")
-    print("运行命令: python src/server.py\n")
-    success = asyncio.run(run_integration_tests())
-    exit(0 if success else 1)
+async def test_list_tools_only_two_tools(mcp_client):
+    tools = await mcp_client.list_tools()
+    names = sorted(_tool_name(t) for t in tools)
+    assert names == ["batch_search_words", "search_word"]
+
+
+async def test_search_word_normalizes_word(mcp_client, sample_api_response):
+    """search_word 应在 server 层做 strip/规范化，并把规范化后的 word 返回给客户端。"""
+    with patch("src.server.NaverClient") as mock_client_class:
+        mock_client = AsyncMock()
+        mock_client.search.return_value = sample_api_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client_class.return_value.__aexit__.return_value = None
+
+        result = await mcp_client.call_tool(
+            "search_word",
+            {"word": "  안녕하세요  ", "dict_type": "ko-zh"},
+        )
+        payload = json.loads(result.data)
+
+        assert payload["success"] is True
+        assert payload["word"] == "안녕하세요"
+        mock_client.search.assert_awaited_once_with("안녕하세요", "ko-zh")
+
+
+async def test_batch_search_dedup_and_partial_success(mcp_client, sample_api_response):
+    """batch_search_words：去重 miss、结构化错误、整体 partial_success 语义。"""
+    with patch("src.server.NaverClient") as mock_client_class:
+        mock_client = AsyncMock()
+        mock_client.search.return_value = sample_api_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client_class.return_value.__aexit__.return_value = None
+
+        result = await mcp_client.call_tool(
+            "batch_search_words",
+            {"words": ["  안녕하세요  ", "", "안녕하세요"], "dict_type": "ko-zh"},
+        )
+        payload = json.loads(result.data)
+
+        assert payload["success"] is False
+        assert payload["partial_success"] is True
+        assert payload["count"] == 3
+        assert payload["success_count"] == 2
+        assert payload["fail_count"] == 1
+
+        # 去重 miss：只应对 "안녕하세요" 访问一次上游
+        mock_client.search.assert_awaited_once_with("안녕하세요", "ko-zh")
+
+        # 第 2 个词是校验失败
+        assert payload["results"][1]["success"] is False
+        assert payload["results"][1]["error_type"] == "validation"

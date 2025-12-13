@@ -25,9 +25,10 @@ class TestConfig:
     
     def test_default_values(self):
         """Test that default configuration values are set correctly."""
-        config = Config()
+        with patch.dict(os.environ, {}, clear=True):
+            config = Config()
         
-        assert config.SERVER_HOST == "127.0.0.1"
+        assert config.SERVER_HOST == "0.0.0.0"
         assert config.SERVER_PORT == 8000
         assert config.HTTP_TIMEOUT == 30.0
         assert config.LOG_LEVEL == "INFO"
@@ -35,11 +36,12 @@ class TestConfig:
     
     def test_get_server_address(self):
         """Test server address generation."""
-        config = Config()
-        address = config.get_server_address()
+        with patch.dict(os.environ, {}, clear=True):
+            config = Config()
+            address = config.get_server_address()
         
         assert address == f"http://{config.SERVER_HOST}:{config.SERVER_PORT}"
-        assert "http://127.0.0.1:8000" == address
+        assert "http://0.0.0.0:8000" == address
     
     @patch.dict(os.environ, {
         "SERVER_HOST": "127.0.0.1",

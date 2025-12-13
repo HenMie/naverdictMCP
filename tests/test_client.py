@@ -24,7 +24,7 @@ class TestNaverClient:
         """Test that search raises error without context manager."""
         client = NaverClient()
         
-        with pytest.raises(RuntimeError, match="Client not initialized"):
+        with pytest.raises(RuntimeError, match="客户端未初始化"):
             await client.search("테스트")
     
     @pytest.mark.asyncio

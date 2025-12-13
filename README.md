@@ -4,15 +4,15 @@
 
 ## 📋 目录
 
-- [功能特性](#功能特性)
-- [快速开始](#快速开始)
-- [安装](#安装)
+- [功能特性](#-功能特性)
+- [快速开始](#-快速开始)
+- [安装](#-安装)
 - [配置](#配置)
-- [使用示例](#使用示例)
+- [使用示例](#-使用示例)
 - [开发](#开发)
-- [API 参考](#api-参考)
-- [故障排除](#故障排除)
-- [许可证](#许可证)
+- [API 参考](#-api-参考)
+- [故障排除](#-故障排除)
+- [许可证](#-许可证)
 
 ## ✨ 功能特性
 
@@ -23,7 +23,7 @@
 - 🔧 **灵活配置**: 支持环境变量配置端口、超时等参数,配置验证确保参数有效性
 - 🛡️ **输入验证**: 严格的输入验证机制,防止无效请求
 - 📊 **完整日志系统**: 统一的日志配置,支持多级别日志输出
-- 🚦 **API 限流保护**: 基于令牌桶算法的请求限流,防止 API 滥用(默认 60 请求/分钟)
+- 🚦 **API 限流保护**: 基于令牌桶算法的**全局共享**上游限流(默认 60 上游请求/分钟,仅对缓存 miss 扣配额)
 - ⚠️ **健壮错误处理**: 分类错误处理机制,提供清晰的错误信息和类型
 - 🚀 **智能缓存机制**: TTL 缓存 + LRU 淘汰策略,大幅提升查询性能(默认 1 小时缓存)
 - 🔌 **连接池复用**: 全局 HTTP 连接池,减少连接开销,提升并发性能
@@ -128,6 +128,7 @@ make docker-run
 项目使用多阶段构建优化 Docker 镜像:
 
 **优化特性:**
+
 - ✅ **镜像瘦身**: 多阶段构建，仅包含运行时依赖 (~250MB)
 - ✅ **构建加速**: 利用缓存层，增量构建更快
 - ✅ **安全增强**: 使用非 root 用户运行容器
@@ -152,7 +153,7 @@ docker ps
 # 如果连续 3 次失败，容器状态变为 unhealthy
 ```
 
-## ⚙️ 配置
+## 配置
 
 ### 环境变量
 
@@ -347,7 +348,7 @@ curl -X POST http://localhost:8000/mcp \
   }'
 ```
 
-## 🛠️ 开发
+## 开发
 
 ### 运行测试
 
@@ -386,60 +387,30 @@ pytest tests/test_performance.py -v -m performance
 # 运行基准测试(详细输出)
 pytest tests/test_performance.py -v -m benchmark -s
 
-# 示例输出:
-# 单次查询延迟: 0.234s ✅
-# 并发查询 5 个单词延迟: 0.567s ✅
-# 缓存读取延迟: 0.000089s (加速比: 2629x) ✅
+# 说明:
+# - `tests/test_performance.py` 默认会 mock 掉真实网络请求，避免在本地/CI 环境下不稳定
+# - 输出的耗时仅用于监测本地逻辑回归，不代表真实 Naver API 的网络延迟
 ```
 
-**性能基准:**
-- 单次查询: < 2 秒
-- 缓存命中: < 10ms (比 API 快 100+ 倍)
-- 并发查询: 线性扩展,5 个单词 < 5 秒
-- 高并发(50 请求): < 10 秒
+**建议用法:**
+
+- 研发日常：直接跑 `pytest -q`（稳定、无需外网）
+- 真实网络基准：请用 curl 示例或自行编写 benchmark（不要依赖单测的 mock 结果）
 
 **测试覆盖情况:**
 
-| 测试文件 | 测试数量 | 状态 |
-|---------|---------|------|
-| test_config.py | 14 | ✅ 全部通过 |
-| test_client.py | 14 | ✅ 全部通过 |
-| test_parser.py | 8 | ✅ 全部通过 |
-| test_server.py | 16 | ✅ 全部通过 |
-| test_logger.py | 5 | ✅ 全部通过 |
-| test_rate_limiter.py | 9 | ✅ 全部通过 |
-| test_cache.py | 12 | ✅ 全部通过 |
-| test_metrics.py | 16 | ✅ 全部通过 |
-| test_performance.py | 8 | ✅ 全部通过 |
-| test_integration.py | 2 | ✅ 全部通过 |
-| test_code_quality.py | 9 | ✅ 全部通过 |
-| **总计** | **113** | **✅ 100%** |
+- 测试数量会随版本变化（以 `pytest` 输出为准）
+- 当前版本 `pytest -q` 可一次通过（示例：115 passed）
 
 #### 集成测试
 
-集成测试需要 MCP 服务器运行在 `http://127.0.0.1:8000`。
-
-**方式 1: 使用 pytest**
+集成测试使用 FastMCP 的 **in-memory transport**（不依赖端口、不需要启动服务器、不访问外网）。
 
 ```bash
-# 1. 启动服务器
-python src/server.py
-
-# 2. 在另一个终端运行集成测试
 pytest tests/test_integration.py -v
 ```
 
-**方式 2: 独立运行**
-
-```bash
-# 1. 启动服务器
-python src/server.py
-
-# 2. 在另一个终端运行集成测试
-python tests/test_integration.py
-```
-
-独立运行模式会显示详细的测试过程和结果摘要。
+如需验证真实 HTTP 传输与外网连通性，请使用上面的 curl 示例对 `http://localhost:8000/mcp` 做联调。
 
 ### 测试覆盖率
 
@@ -454,9 +425,9 @@ pytest --cov=src --cov-report=html --cov-report=term
 当前测试覆盖率: **~90%** (目标 ≥ 80% ✅)
 
 **测试亮点:**
-- ✅ 104 个测试用例全部通过
-- ✅ 涵盖功能、性能、集成三个维度
-- ✅ 自动化集成测试(无需手动启动服务器)
+
+- ✅ 覆盖功能、性能（mock 网络）、协议级集成（in-memory）三个维度
+- ✅ 自动化集成测试（无需手动启动服务器）
 - ✅ 详细的性能基准测试
 - ✅ 缓存和指标系统的完整测试
 
@@ -496,20 +467,19 @@ LOG_LEVEL=ERROR  # 仅显示错误
 
 服务器内置基于令牌桶算法的请求限流:
 
-- **默认限制**: 60 请求/分钟(每个客户端独立计算)
-- **令牌补充**: 每秒补充 1 个令牌
-- **超限响应**: 返回 429 Too Many Requests
+- **默认限制**: 60 上游请求/分钟（**全局共享**，用于保护服务器出口 IP）
+- **扣配额规则**:
+  - `search_word`: 仅当缓存 miss 且需要访问 Naver 时消耗 1 个令牌
+  - `batch_search_words`: 仅对缓存 miss 的词消耗令牌，并按“去重后的 miss 词数”扣配额
+- **超限响应**: 工具返回 `error_type=rate_limit` 的 JSON 错误结构（HTTP 状态码仍为 MCP 正常响应）
 
 **限流配置:**
 
 修改 `src/rate_limiter.py`:
 
 ```python
-# 调整限流参数
-rate_limiter = RateLimiter(
-    capacity=60,      # 令牌桶容量
-    refill_rate=1.0   # 每秒补充速率
-)
+# 调整限流参数（每分钟允许访问上游 Naver 的最大次数）
+rate_limiter = RateLimiter(requests_per_minute=60)
 ```
 
 ### 错误处理机制
@@ -517,20 +487,19 @@ rate_limiter = RateLimiter(
 服务器提供完整的错误分类和处理:
 
 ```python
-from src.client import ValidationError
 from src.config import ConfigError
+from src.config import Config
 
-# 输入验证错误
+# 配置错误（通过环境变量注入后初始化配置）
+import os
+os.environ["SERVER_PORT"] = "99999"
 try:
-    result = await search_word("")
-except ValidationError as e:
-    print(f"验证失败: {e}")
-
-# 配置错误
-try:
-    config = Config(SERVER_PORT=99999)
+    cfg = Config()
 except ConfigError as e:
     print(f"配置无效: {e}")
+
+# 工具调用错误：search_word/batch_search_words 会返回统一 JSON 字符串
+# 请通过解析 JSON 后检查 success / error_type / details
 ```
 
 所有错误都会被捕获并返回统一格式的错误响应,包含错误类型、描述和详细信息。
@@ -540,6 +509,7 @@ except ConfigError as e:
 服务器内置智能缓存机制,显著提升性能:
 
 **特性:**
+
 - **TTL 过期**: 默认 1 小时后自动过期
 - **LRU 淘汰**: 缓存满时淘汰最少使用的条目
 - **命中加速**: 缓存命中延迟 < 10ms,比 API 快 100+ 倍
@@ -602,6 +572,7 @@ make pre-commit
 ```
 
 Pre-commit 会在每次 `git commit` 时自动运行:
+
 - ✅ Ruff 代码检查和格式化
 - ✅ MyPy 类型检查
 - ✅ 清理尾随空格
@@ -726,12 +697,14 @@ git commit -m "feat: 新功能"
 **返回:**
 
 格式化的 JSON 字符串,包含:
+
 - 单词/短语
 - 发音(如果有)
 - 释义列表
 - 例句(最多 3 个)
 
 **缓存行为:**
+
 - 首次查询从 API 获取,自动缓存 1 小时
 - 重复查询直接从缓存返回,延迟 < 10ms
 - 缓存满时自动淘汰最少使用的条目(LRU)
@@ -772,19 +745,31 @@ git commit -m "feat: 新功能"
 
 **返回:**
 
-包含每个单词查询结果的 JSON 数组:
+包含每个单词查询结果的 JSON:
 
 ```json
 {
-  "success": true,
+  "success": false,
+  "partial_success": true,
   "count": 3,
+  "success_count": 2,
+  "fail_count": 1,
   "dict_type": "ko-zh",
   "results": [
     {
       "word": "안녕하세요",
       "success": true,
+      "count": 1,
       "results": [...],
       "from_cache": true
+    },
+    {
+      "word": "",
+      "success": false,
+      "error": "输入验证失败",
+      "error_type": "validation",
+      "details": "搜索词不能为空",
+      "from_cache": false
     },
     ...
   ],
@@ -793,6 +778,7 @@ git commit -m "feat: 新功能"
 ```
 
 **性能特点:**
+
 - 并发处理所有查询,比顺序查询快 5-10 倍
 - 自动利用缓存,重复单词秒级响应
 - 单个单词失败不影响其他查询
@@ -833,7 +819,7 @@ git commit -m "feat: 新功能"
 | `http_error` | HTTP 状态码错误 | 400、404、429、500 等 |
 | `network_error` | 网络连接错误 | 无法连接到 API、DNS 解析失败 |
 | `parse_error` | 响应解析错误 | API 返回格式变化、响应不完整 |
-| `rate_limit` | 请求频率限制 | 超过 60 请求/分钟限制 |
+| `rate_limit` | 请求频率限制 | 超过 60 上游请求/分钟（全局共享配额） |
 | `unknown` | 未知错误 | 其他未预期的错误 |
 
 ### 常见问题
@@ -843,6 +829,7 @@ git commit -m "feat: 新功能"
 **问题:** `Address already in use` 错误
 
 **解决方案:**
+
 - 检查端口 8000 是否被占用
 - 在 `.env` 文件中更改 `SERVER_PORT` 为其他端口
 
@@ -855,6 +842,7 @@ SERVER_PORT=9000
 **问题:** 启动时报配置错误
 
 **解决方案:**
+
 - 检查 `.env` 文件中的配置值:
   - `SERVER_PORT`: 必须在 1-65535 范围内
   - `HTTP_TIMEOUT`: 必须 > 0 且 ≤ 300 秒
@@ -873,13 +861,14 @@ LOG_LEVEL=INFO
 **问题:** 返回 `rate_limit` 错误
 
 **解决方案:**
-- 默认限制为 60 请求/分钟
+
+- 默认限制为 60 上游请求/分钟（全局共享）
 - 等待一段时间后重试
 - 如需调整限流配置,修改 `src/rate_limiter.py` 中的参数:
 
 ```python
-# 默认: 60 请求/分钟
-rate_limiter = RateLimiter(capacity=60, refill_rate=1.0)
+# 默认: 60 上游请求/分钟
+rate_limiter = RateLimiter(requests_per_minute=60)
 ```
 
 #### 4. 输入验证错误
@@ -887,6 +876,7 @@ rate_limiter = RateLimiter(capacity=60, refill_rate=1.0)
 **问题:** 返回 `validation` 错误
 
 **解决方案:**
+
 - 确保搜索词不为空
 - 搜索词长度不超过 100 字符
 - 字典类型为 `"ko-zh"` 或 `"ko-en"`
@@ -906,6 +896,7 @@ rate_limiter = RateLimiter(capacity=60, refill_rate=1.0)
 **问题:** HTTP 请求超时
 
 **解决方案:**
+
 - 检查网络连接
 - 增加超时时间:
 
@@ -918,6 +909,7 @@ HTTP_TIMEOUT=60.0
 **问题:** `ModuleNotFoundError: No module named 'src'`
 
 **解决方案:**
+
 - 确保从项目根目录运行服务器
 - 或使用绝对导入:
 
@@ -931,6 +923,7 @@ python src/server.py
 **问题:** 某些测试失败
 
 **解决方案:**
+
 - 确保安装了所有开发依赖:
 
 ```bash
@@ -944,11 +937,13 @@ uv sync  # 或 pip install -e ".[dev]"
 **问题:** 查询返回 "未找到相关结果"
 
 **可能原因:**
+
 - 单词拼写错误
 - Naver 辞典中确实没有该词条
 - API 响应格式变化
 
 **调试方法:**
+
 - 在浏览器中访问 Naver 辞典验证词条是否存在
 - 检查日志输出(设置 `LOG_LEVEL=DEBUG`):
 
@@ -977,5 +972,6 @@ LOG_LEVEL=DEBUG
 **开发者:** 基于 FastMCP 2.0 构建
 
 **相关链接:**
+
 - [FastMCP 文档](https://github.com/jlowin/fastmcp)
 - [Naver 辞典](https://korean.dict.naver.com/)

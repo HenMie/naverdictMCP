@@ -15,106 +15,85 @@ class TestRateLimiter:
         assert limiter.requests_per_minute == 60
         assert limiter.refill_rate == 1.0  # 60 / 60
     
-    def test_first_request_allowed(self):
-        """Test that first request is always allowed."""
+    def test_first_consume_allowed(self):
+        """Test that first consume is always allowed when bucket is full."""
         limiter = RateLimiter(requests_per_minute=60)
-        
-        assert limiter.is_allowed("client1") is True
+
+        assert limiter.consume(1) is True
     
     def test_rate_limit_enforcement(self):
         """Test that rate limit is enforced."""
         limiter = RateLimiter(requests_per_minute=2)  # Very low limit for testing
         
-        # First 2 requests should be allowed
-        assert limiter.is_allowed("client2") is True
-        assert limiter.is_allowed("client2") is True
+        # First 2 tokens should be allowed
+        assert limiter.consume(1) is True
+        assert limiter.consume(1) is True
         
-        # Third request should be denied (no time passed)
-        assert limiter.is_allowed("client2") is False
+        # Third should be denied (no time passed)
+        assert limiter.consume(1) is False
     
-    def test_different_clients_independent(self):
-        """Test that different clients have independent limits."""
-        limiter = RateLimiter(requests_per_minute=1)
-        
-        # Each client should be allowed one request
-        assert limiter.is_allowed("client3") is True
-        assert limiter.is_allowed("client4") is True
-        
-        # Second request from each should be denied
-        assert limiter.is_allowed("client3") is False
-        assert limiter.is_allowed("client4") is False
+    def test_consume_multiple_tokens(self):
+        """Test consuming multiple tokens in one call."""
+        limiter = RateLimiter(requests_per_minute=5)
+
+        assert limiter.consume(3) is True
+        assert limiter.get_remaining_tokens() == 2
+
+        # Not enough tokens left
+        assert limiter.consume(3) is False
     
     def test_token_refill_over_time(self):
         """Test that tokens refill over time."""
         limiter = RateLimiter(requests_per_minute=60)  # 1 token per second
         
-        # Use up one token
-        assert limiter.is_allowed("client5") is True
+        # Use up all tokens
+        assert limiter.consume(60) is True
+        assert limiter.consume(1) is False
         
         # Wait for token to refill (need at least 1 second)
         time.sleep(1.1)
         
         # Should have a new token now
-        assert limiter.is_allowed("client5") is True
+        assert limiter.consume(1) is True
     
     def test_get_remaining_tokens(self):
-        """Test getting remaining tokens for a client."""
+        """Test getting remaining tokens."""
         limiter = RateLimiter(requests_per_minute=10)
         
-        # New client should have full tokens
-        assert limiter.get_remaining_tokens("client6") == 10
+        # New limiter should have full tokens
+        assert limiter.get_remaining_tokens() == 10
         
-        # After one request
-        limiter.is_allowed("client6")
-        assert limiter.get_remaining_tokens("client6") == 9
+        # After one consume
+        limiter.consume(1)
+        assert limiter.get_remaining_tokens() == 9
         
-        # After two more requests
-        limiter.is_allowed("client6")
-        limiter.is_allowed("client6")
-        assert limiter.get_remaining_tokens("client6") == 7
+        # After two more consumes
+        limiter.consume(1)
+        limiter.consume(1)
+        assert limiter.get_remaining_tokens() == 7
     
-    def test_reset_client(self):
-        """Test resetting rate limit for a client."""
+    def test_reset(self):
+        """Test resetting rate limiter state."""
         limiter = RateLimiter(requests_per_minute=2)
-        
-        # Use up tokens
-        limiter.is_allowed("client7")
-        limiter.is_allowed("client7")
-        assert limiter.is_allowed("client7") is False
-        
-        # Reset the client
-        limiter.reset_client("client7")
-        
-        # Should be allowed again
-        assert limiter.is_allowed("client7") is True
-    
-    def test_clear_all(self):
-        """Test clearing all rate limit data."""
-        limiter = RateLimiter(requests_per_minute=1)
-        
-        # Use tokens for multiple clients
-        limiter.is_allowed("client8")
-        limiter.is_allowed("client9")
-        
-        # Clear all data
-        limiter.clear_all()
-        
-        # All clients should have full tokens again
-        assert limiter.get_remaining_tokens("client8") == 1
-        assert limiter.get_remaining_tokens("client9") == 1
+
+        assert limiter.consume(2) is True
+        assert limiter.consume(1) is False
+
+        limiter.reset()
+        assert limiter.get_remaining_tokens() == 2
     
     def test_max_tokens_cap(self):
         """Test that tokens don't exceed maximum."""
         limiter = RateLimiter(requests_per_minute=5)
         
-        # New client
-        limiter.is_allowed("client10")
+        limiter.consume(1)
         
         # Wait a very long time
         time.sleep(2)
         
         # Should have at most 5 tokens (the max)
-        remaining = limiter.get_remaining_tokens("client10")
+        remaining = limiter.get_remaining_tokens()
         assert remaining <= 5
+
 
 
