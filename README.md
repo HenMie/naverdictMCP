@@ -123,6 +123,30 @@ docker run -d -p 8000:8000 --name naver-dict-mcp naver-dict-mcp:latest
 make docker-run
 ```
 
+### GitHub Actions 自动构建并推送到 Docker Hub
+
+本项目已内置 GitHub Actions 工作流（`/.github/workflows/docker-publish.yml`），会自动构建 Docker 镜像并推送到 Docker Hub：
+
+- **镜像仓库**：`chouann/naverdictmcp`
+- **触发条件**：
+  - **push 到 `main`**：发布 `latest` 与 `sha-<短提交>` 两个标签
+  - **push 语义化 tag**（如 `v0.1.0` 或 `0.1.0`）：发布对应 tag 标签（例如 `v0.1.0`）
+  - **手动触发**：在 GitHub Actions 页面点击运行
+
+**你需要在 GitHub 仓库里配置 Secrets：**
+
+- **`DOCKERHUB_USERNAME`**：Docker Hub 用户名（例如 `chouann`）
+- **`DOCKERHUB_TOKEN`**：Docker Hub Access Token（建议使用可读写权限的 Token，而不是密码）
+
+配置路径：GitHub 仓库 `Settings` → `Secrets and variables` → `Actions` → `New repository secret`。
+
+**拉取并运行已发布镜像：**
+
+```bash
+docker pull chouann/naverdictmcp:latest
+docker run -d -p 8000:8000 --name naverdictmcp chouann/naverdictmcp:latest
+```
+
 ### Docker 镜像优化
 
 项目使用多阶段构建优化 Docker 镜像:
