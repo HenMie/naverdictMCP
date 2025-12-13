@@ -165,3 +165,23 @@ class TestTTLCache:
         assert cache.get("word_50", "ko-zh")["index"] == 50
         assert cache.get("word_99", "ko-zh")["index"] == 99
 
+    def test_cache_set_custom_ttl_overrides_default(self):
+        """set(ttl=...) 应覆盖默认 TTL（用于负缓存等场景）。"""
+        cache = TTLCache(max_size=10, ttl=60)
+
+        cache.set("negative", "ko-zh", {"data": "miss"}, ttl=1)
+        assert cache.get("negative", "ko-zh") is not None
+
+        time.sleep(1.1)
+        assert cache.get("negative", "ko-zh") is None
+
+    def test_cache_key_mode_plain_and_hash_with_plain(self):
+        """key_mode 应支持可读 key（plain/hash_with_plain），便于调试。"""
+        cache_plain = TTLCache(max_size=10, ttl=60, key_mode="plain")
+        assert cache_plain._make_key("word", "ko-zh") == "word:ko-zh"
+
+        cache_mix = TTLCache(max_size=10, ttl=60, key_mode="hash_with_plain")
+        key = cache_mix._make_key("word", "ko-zh")
+        assert key.startswith("word:ko-zh|")
+        assert len(key.split("|", 1)[1]) == 32  # MD5 hash 长度
+

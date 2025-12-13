@@ -20,20 +20,32 @@ class TTLCache:
         - 自动清理：获取时自动清理过期数据
     """
     
-    def __init__(self, max_size: int = 1000, ttl: int = 3600) -> None:
+    def __init__(self, max_size: int = 1000, ttl: int = 3600, key_mode: str = "hash") -> None:
         """
         初始化缓存。
         
         Args:
             max_size: 最大缓存条目数
             ttl: 过期时间（秒），默认 1 小时
+            key_mode: 缓存 key 模式：hash/plain/hash_with_plain
         """
+        # value + expires_at（绝对时间戳），便于支持每条目 TTL
         self.cache: Dict[str, Tuple[Any, float]] = {}
         self.max_size = max_size
         self.ttl = ttl
+        self.key_mode = key_mode
         self.access_times: Dict[str, float] = {}  # LRU 访问时间跟踪
-        logger.debug(f"初始化缓存: max_size={max_size}, ttl={ttl}s")
+        logger.debug(
+            "初始化缓存: max_size=%s, ttl=%ss, key_mode=%s",
+            max_size,
+            ttl,
+            key_mode,
+        )
     
+    def _make_plain_key(self, word: str, dict_type: str) -> str:
+        """生成可读的明文 key（用于调试或 plain 模式）。"""
+        return f"{word}:{dict_type}"
+
     def _make_key(self, word: str, dict_type: str) -> str:
         """
         根据单词和字典类型生成缓存键。
@@ -45,8 +57,18 @@ class TTLCache:
         Returns:
             组合后的 MD5 哈希值
         """
-        data = f"{word}:{dict_type}"
-        return hashlib.md5(data.encode('utf-8')).hexdigest()
+        plain = self._make_plain_key(word, dict_type)
+        digest = hashlib.md5(plain.encode("utf-8")).hexdigest()
+
+        if self.key_mode == "hash":
+            return digest
+        if self.key_mode == "plain":
+            return plain
+        if self.key_mode == "hash_with_plain":
+            # 兼顾可读性与唯一性：保留明文，同时拼接 hash（便于肉眼定位与排查）
+            return f"{plain}|{digest}"
+        # 兜底：保持 hash 行为（理论上 config 已验证）
+        return digest
     
     def get(self, word: str, dict_type: str) -> Optional[Any]:
         """
@@ -62,11 +84,11 @@ class TTLCache:
         key = self._make_key(word, dict_type)
         
         if key in self.cache:
-            value, timestamp = self.cache[key]
+            value, expires_at = self.cache[key]
             current_time = time.time()
             
             # 检查是否过期
-            if current_time - timestamp < self.ttl:
+            if current_time < expires_at:
                 # 更新 LRU 访问时间
                 self.access_times[key] = current_time
                 logger.debug(f"缓存命中: word='{word}', dict_type={dict_type}")
@@ -81,7 +103,7 @@ class TTLCache:
         logger.debug(f"缓存未命中: word='{word}', dict_type={dict_type}")
         return None
     
-    def set(self, word: str, dict_type: str, value: Any) -> None:
+    def set(self, word: str, dict_type: str, value: Any, ttl: Optional[int] = None) -> None:
         """
         设置缓存值（带当前时间戳）。
         
@@ -89,6 +111,7 @@ class TTLCache:
             word: 搜索词
             dict_type: 字典类型
             value: 要缓存的值
+            ttl: 可选，覆盖默认 TTL（秒）
         """
         # 如果缓存已满，淘汰最少使用的条目
         if len(self.cache) >= self.max_size:
@@ -96,7 +119,8 @@ class TTLCache:
         
         key = self._make_key(word, dict_type)
         current_time = time.time()
-        self.cache[key] = (value, current_time)
+        ttl_seconds = self.ttl if ttl is None else ttl
+        self.cache[key] = (value, current_time + ttl_seconds)
         self.access_times[key] = current_time
         logger.debug(f"已缓存: word='{word}', dict_type={dict_type}, 当前大小={len(self.cache)}")
     
@@ -142,10 +166,11 @@ class TTLCache:
             "size": len(self.cache),
             "max_size": self.max_size,
             "ttl": self.ttl,
+            "key_mode": self.key_mode,
             "utilization": len(self.cache) / self.max_size if self.max_size > 0 else 0
         }
 
 
 # 全局缓存实例
 # 默认值由 Config 统一管理（支持环境变量配置）
-cache = TTLCache(max_size=config.CACHE_MAX_SIZE, ttl=config.CACHE_TTL)
+cache = TTLCache(max_size=config.CACHE_MAX_SIZE, ttl=config.CACHE_TTL, key_mode=config.CACHE_KEY_MODE)

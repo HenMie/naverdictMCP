@@ -1,5 +1,6 @@
 """Tests for MCP server module."""
 
+import asyncio
 import pytest
 import json
 import httpx
@@ -7,6 +8,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from src.server import _batch_search_words_impl, _search_word_impl
 from src.client import ValidationError
 from src.cache import cache
+from src.config import config
 from src.metrics import metrics
 from src.rate_limiter import rate_limiter
 
@@ -84,6 +86,34 @@ class TestSearchWordTool:
             assert '"success": true' in result
             assert '"count": 0' in result
             assert '"results": []' in result
+
+    @pytest.mark.asyncio
+    async def test__search_word_impl_negative_cache_ttl(self, empty_api_response):
+        """未找到结果应走负缓存短 TTL，过期后需要重新访问上游。"""
+        with (
+            patch("src.server.NaverClient") as mock_client_class,
+            patch.object(config, "CACHE_NEGATIVE_TTL", 1),
+            patch.object(config, "CACHE_TTL", 3600),
+        ):
+            mock_client = AsyncMock()
+            mock_client.search.return_value = empty_api_response
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            mock_client_class.return_value.__aexit__.return_value = None
+
+            # 第一次：cache miss -> upstream
+            result1 = await _search_word_impl("不存在的词", "ko-zh")
+            assert json.loads(result1)["success"] is True
+
+            # 第二次：短 TTL 内应缓存命中（不再访问上游）
+            result2 = await _search_word_impl("不存在的词", "ko-zh")
+            assert json.loads(result2)["success"] is True
+            mock_client.search.assert_awaited_once_with("不存在的词", "ko-zh")
+
+            # 负缓存过期后：再次访问上游
+            await asyncio.sleep(1.1)
+            result3 = await _search_word_impl("不存在的词", "ko-zh")
+            assert json.loads(result3)["success"] is True
+            assert mock_client.search.await_count == 2
     
     @pytest.mark.asyncio
     async def test__search_word_impl_validation_error(self):
@@ -124,6 +154,7 @@ class TestSearchWordTool:
             mock_client = AsyncMock()
             mock_response = MagicMock()
             mock_response.status_code = 404
+            mock_response.headers = {}
             mock_client.search.side_effect = httpx.HTTPStatusError(
                 "404 Not Found",
                 request=MagicMock(),
@@ -138,6 +169,115 @@ class TestSearchWordTool:
             assert result_dict["success"] is False
             assert result_dict["error_type"] == "http_error"
             assert "404" in result_dict["error"] or "未找到" in result_dict["error"]
+
+    @pytest.mark.asyncio
+    async def test__search_word_impl_retries_on_retryable_http_status(self, sample_api_response):
+        """对上游 5xx（可重试）应按策略重试（指数退避+抖动），成功后返回正常结果。"""
+        with (
+            patch("src.server.NaverClient") as mock_client_class,
+            patch("src.server.asyncio.sleep", new=AsyncMock()) as mock_sleep,
+            patch("src.server._try_consume_retry_token", return_value=True) as mock_consume_retry,
+            patch.object(config, "UPSTREAM_RETRY_MAX_ATTEMPTS", 2),
+        ):
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 503
+            mock_response.headers = {}
+            upstream_err = httpx.HTTPStatusError(
+                "503 Service Unavailable",
+                request=MagicMock(),
+                response=mock_response,
+            )
+            # 第一次 503，第二次成功
+            mock_client.search.side_effect = [upstream_err, sample_api_response]
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            mock_client_class.return_value.__aexit__.return_value = None
+
+            result = await _search_word_impl("테스트", "ko-zh")
+            payload = json.loads(result)
+
+            assert payload["success"] is True
+            assert mock_client.search.await_count == 2
+            mock_sleep.assert_awaited_once()
+            mock_consume_retry.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test__search_word_impl_does_not_retry_on_404(self):
+        """对 404（不可重试）不应重试。"""
+        with (
+            patch("src.server.NaverClient") as mock_client_class,
+            patch("src.server.asyncio.sleep", new=AsyncMock()) as mock_sleep,
+            patch("src.server._try_consume_retry_token", return_value=True) as mock_consume_retry,
+            patch.object(config, "UPSTREAM_RETRY_MAX_ATTEMPTS", 2),
+        ):
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 404
+            mock_response.headers = {}
+            mock_client.search.side_effect = httpx.HTTPStatusError(
+                "404 Not Found",
+                request=MagicMock(),
+                response=mock_response,
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            mock_client_class.return_value.__aexit__.return_value = None
+
+            result = await _search_word_impl("테스트", "ko-zh")
+            payload = json.loads(result)
+
+            assert payload["success"] is False
+            assert payload["error_type"] == "http_error"
+            assert mock_client.search.await_count == 1
+            mock_sleep.assert_not_called()
+            mock_consume_retry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test__search_word_impl_upstream_429_error_type(self):
+        """上游 429 应分类为 upstream_rate_limit。"""
+        with (
+            patch("src.server.NaverClient") as mock_client_class,
+            patch.object(config, "UPSTREAM_RETRY_MAX_ATTEMPTS", 1),
+        ):
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 429
+            mock_response.headers = {"Retry-After": "1"}
+            mock_client.search.side_effect = httpx.HTTPStatusError(
+                "429 Too Many Requests",
+                request=MagicMock(),
+                response=mock_response,
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            mock_client_class.return_value.__aexit__.return_value = None
+
+            result = await _search_word_impl("테스트", "ko-zh")
+            payload = json.loads(result)
+            assert payload["success"] is False
+            assert payload["error_type"] == "upstream_rate_limit"
+
+    @pytest.mark.asyncio
+    async def test__search_word_impl_upstream_5xx_error_type(self):
+        """上游 5xx 应分类为 upstream_server_error。"""
+        with (
+            patch("src.server.NaverClient") as mock_client_class,
+            patch.object(config, "UPSTREAM_RETRY_MAX_ATTEMPTS", 1),
+        ):
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 502
+            mock_response.headers = {}
+            mock_client.search.side_effect = httpx.HTTPStatusError(
+                "502 Bad Gateway",
+                request=MagicMock(),
+                response=mock_response,
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            mock_client_class.return_value.__aexit__.return_value = None
+
+            result = await _search_word_impl("테스트", "ko-zh")
+            payload = json.loads(result)
+            assert payload["success"] is False
+            assert payload["error_type"] == "upstream_server_error"
     
     @pytest.mark.asyncio
     async def test__search_word_impl_network_error(self):

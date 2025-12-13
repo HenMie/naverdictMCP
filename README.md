@@ -181,7 +181,13 @@ docker ps
 | `NAVER_BASE_URL` | Naver API 基础 URL | `https://korean.dict.naver.com/api3` |
 | `REQUESTS_PER_MINUTE` | 上游（Naver）请求限流（每分钟，**全局共享**） | `60` |
 | `CACHE_TTL` | 缓存 TTL（秒） | `3600` |
+| `CACHE_NEGATIVE_TTL` | 负缓存 TTL（秒，未找到结果时使用，建议短一些） | `60` |
 | `CACHE_MAX_SIZE` | 缓存最大条目数 | `1000` |
+| `CACHE_KEY_MODE` | 缓存 key 模式：`hash` / `plain` / `hash_with_plain` | `hash` |
+| `BATCH_ITEM_INCLUDE_DICT_TYPE` | 批量结果子项是否重复输出 `dict_type` | `true` |
+| `UPSTREAM_RETRY_MAX_ATTEMPTS` | 上游重试最大尝试次数（包含首次） | `3` |
+| `UPSTREAM_RETRY_BASE_DELAY` | 上游重试基础退避时间（秒） | `0.2` |
+| `UPSTREAM_RETRY_MAX_DELAY` | 上游重试最大退避时间（秒） | `2.0` |
 | `HTTPX_MAX_KEEPALIVE_CONNECTIONS` | httpx keep-alive 连接上限 | `20` |
 | `HTTPX_MAX_CONNECTIONS` | httpx 总连接上限 | `100` |
 | `HTTPX_KEEPALIVE_EXPIRY` | keep-alive 连接过期时间（秒） | `30.0` |
@@ -199,7 +205,13 @@ HTTP_TIMEOUT=60.0
 LOG_LEVEL=DEBUG
 REQUESTS_PER_MINUTE=60
 CACHE_TTL=3600
+CACHE_NEGATIVE_TTL=60
 CACHE_MAX_SIZE=1000
+CACHE_KEY_MODE=hash
+BATCH_ITEM_INCLUDE_DICT_TYPE=true
+UPSTREAM_RETRY_MAX_ATTEMPTS=3
+UPSTREAM_RETRY_BASE_DELAY=0.2
+UPSTREAM_RETRY_MAX_DELAY=2.0
 HTTPX_MAX_KEEPALIVE_CONNECTIONS=20
 HTTPX_MAX_CONNECTIONS=100
 HTTPX_KEEPALIVE_EXPIRY=30.0
@@ -219,7 +231,13 @@ BATCH_CONCURRENCY=5
 | `NAVER_BASE_URL` | 必须以 http:// 或 https:// 开头 | `ftp://...`, `example.com` |
 | `REQUESTS_PER_MINUTE` | > 0 | `0`, `-1` |
 | `CACHE_TTL` | > 0 | `0`, `-1` |
+| `CACHE_NEGATIVE_TTL` | > 0 | `0`, `-1` |
 | `CACHE_MAX_SIZE` | > 0 | `0`, `-1` |
+| `CACHE_KEY_MODE` | hash/plain/hash_with_plain | `md5`, `debug` |
+| `BATCH_ITEM_INCLUDE_DICT_TYPE` | true/false/1/0 | `maybe` |
+| `UPSTREAM_RETRY_MAX_ATTEMPTS` | > 0 | `0`, `-1` |
+| `UPSTREAM_RETRY_BASE_DELAY` | ≥ 0 | `-0.1` |
+| `UPSTREAM_RETRY_MAX_DELAY` | > 0 且 ≥ UPSTREAM_RETRY_BASE_DELAY | `0`, `-1`, `0.1(小于 base_delay)` |
 | `HTTPX_MAX_CONNECTIONS` | > 0 | `0`, `-1` |
 | `HTTPX_MAX_KEEPALIVE_CONNECTIONS` | ≥ 0 且 ≤ HTTPX_MAX_CONNECTIONS | `-1`, `1000`(大于 max_connections) |
 | `HTTPX_KEEPALIVE_EXPIRY` | > 0 | `0`, `-1` |
@@ -734,8 +752,9 @@ git commit -m "feat: 新功能"
 
 **缓存行为:**
 
-- 首次查询从 API 获取,自动缓存 1 小时
-- 重复查询直接从缓存返回,延迟 < 10ms
+- 有结果：使用 `CACHE_TTL` 缓存（默认 1 小时）
+- 未找到结果：使用 `CACHE_NEGATIVE_TTL` 进行短 TTL“负缓存”（默认 60 秒）
+- 缓存命中：返回中 `from_cache=true`（便于调用方消费）
 - 缓存满时自动淘汰最少使用的条目(LRU)
 
 **示例:**
@@ -755,9 +774,14 @@ git commit -m "feat: 新功能"
 ```json
 {
   "success": false,
+  "word": "",
+  "dict_type": "ko-zh",
   "error": "输入验证失败",
   "error_type": "validation",
-  "details": "搜索词不能为空"
+  "details": "搜索词不能为空",
+  "from_cache": false,
+  "deduped": false,
+  "source_word": ""
 }
 ```
 
@@ -788,6 +812,7 @@ git commit -m "feat: 新功能"
   "results": [
     {
       "word": "안녕하세요",
+      "dict_type": "ko-zh",
       "success": true,
       "count": 1,
       "results": [...],
@@ -797,12 +822,14 @@ git commit -m "feat: 新功能"
     },
     {
       "word": "",
+      "dict_type": "ko-zh",
       "success": false,
       "error": "输入验证失败",
       "error_type": "validation",
       "details": "搜索词不能为空",
       "from_cache": false,
-      "deduped": false
+      "deduped": false,
+      "source_word": ""
     },
     ...
   ],
@@ -852,9 +879,14 @@ git commit -m "feat: 新功能"
 ```json
 {
   "success": false,
+  "word": "请求的搜索词（规范化后）",
+  "dict_type": "ko-zh",
   "error": "错误简述",
   "error_type": "错误类型",
-  "details": "详细错误信息"
+  "details": "详细错误信息",
+  "from_cache": false,
+  "deduped": false,
+  "source_word": "去重源词（单查等于 word）"
 }
 ```
 
@@ -864,11 +896,20 @@ git commit -m "feat: 新功能"
 |---------|------|----------|
 | `validation` | 输入验证错误 | 空字符串、过长字符串、无效字典类型 |
 | `timeout` | 请求超时 | 网络慢、超时设置过短 |
-| `http_error` | HTTP 状态码错误 | 400、404、429、500 等 |
+| `upstream_rate_limit` | 上游限流 | 上游返回 429（Too Many Requests） |
+| `upstream_server_error` | 上游服务错误 | 上游返回 5xx（500/502/503/504 等） |
+| `http_error` | HTTP 状态码错误 | 400、404 等（不包含上游 429/5xx） |
 | `network_error` | 网络连接错误 | 无法连接到 API、DNS 解析失败 |
 | `parse_error` | 响应解析错误 | API 返回格式变化、响应不完整 |
 | `rate_limit` | 请求频率限制 | 超过 60 上游请求/分钟（全局共享配额） |
 | `unknown` | 未知错误 | 其他未预期的错误 |
+
+**上游重试说明:**
+
+- 对幂等请求（GET）且满足以下条件时，会按“指数退避 + 抖动”自动重试：
+  - 网络异常 / 超时
+  - 上游返回 429、500、502、503、504
+- 重试会**额外消耗**上游配额（与 `REQUESTS_PER_MINUTE` 共用），确保不会因重试突破全局限流。
 
 ### 常见问题
 

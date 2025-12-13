@@ -72,6 +72,19 @@ class RateLimiter:
         logger.warning(f"限流触发(全局): need={tokens}, remaining={int(self._tokens)}")
         return False
 
+    def can_consume(self, tokens: int = 1) -> bool:
+        """判断当前是否“可以”消耗指定数量令牌（不扣减、不打日志）。
+
+        用于重试等场景：我们希望在不产生额外噪音日志的前提下，决定是否继续发起上游请求。
+        """
+
+        if tokens <= 0:
+            raise ValueError("tokens 必须大于 0")
+
+        now = time.time()
+        self._refill(now)
+        return self._tokens >= tokens
+
     def get_remaining_tokens(self) -> int:
         """获取当前剩余令牌数（整数）。"""
         now = time.time()

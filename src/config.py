@@ -86,6 +86,16 @@ def _parse_float(name: str, raw: str) -> float:
         raise ConfigError(f"无效的 {name}: {raw}，必须是数字") from e
 
 
+def _parse_bool(name: str, raw: str) -> bool:
+    """解析布尔环境变量（内部方法）。"""
+    value = str(raw).strip().lower()
+    if value in {"1", "true", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ConfigError(f"无效的 {name}: {raw}，必须是布尔值（true/false/1/0）")
+
+
 class Config:
     """应用配置类，支持环境变量和验证。
     
@@ -98,11 +108,17 @@ class Config:
         - APP_ENV: 运行模式（development/testing/production）
         - REQUESTS_PER_MINUTE: 上游请求限流（每分钟）
         - CACHE_TTL: 缓存 TTL（秒）
+        - CACHE_NEGATIVE_TTL: 负缓存 TTL（秒，未找到结果时使用）
         - CACHE_MAX_SIZE: 缓存最大条目数
+        - CACHE_KEY_MODE: 缓存 key 模式（hash/plain/hash_with_plain）
+        - BATCH_ITEM_INCLUDE_DICT_TYPE: 批量结果子项是否重复输出 dict_type
         - HTTPX_MAX_KEEPALIVE_CONNECTIONS: httpx 连接池 keep-alive 连接上限
         - HTTPX_MAX_CONNECTIONS: httpx 连接池总连接上限
         - HTTPX_KEEPALIVE_EXPIRY: httpx keep-alive 连接过期时间（秒）
         - BATCH_CONCURRENCY: 批量查询内部并发上限（仅针对上游请求）
+        - UPSTREAM_RETRY_MAX_ATTEMPTS: 上游请求最大尝试次数（包含首次）
+        - UPSTREAM_RETRY_BASE_DELAY: 上游重试基础退避时间（秒）
+        - UPSTREAM_RETRY_MAX_DELAY: 上游重试最大退避时间（秒）
     """
     
     # 服务器设置
@@ -124,11 +140,17 @@ class Config:
     # 限流/缓存/连接池等关键参数
     REQUESTS_PER_MINUTE: int
     CACHE_TTL: int
+    CACHE_NEGATIVE_TTL: int
     CACHE_MAX_SIZE: int
+    CACHE_KEY_MODE: str
+    BATCH_ITEM_INCLUDE_DICT_TYPE: bool
     HTTPX_MAX_KEEPALIVE_CONNECTIONS: int
     HTTPX_MAX_CONNECTIONS: int
     HTTPX_KEEPALIVE_EXPIRY: float
     BATCH_CONCURRENCY: int
+    UPSTREAM_RETRY_MAX_ATTEMPTS: int
+    UPSTREAM_RETRY_BASE_DELAY: float
+    UPSTREAM_RETRY_MAX_DELAY: float
     
     def __init__(self, validate: bool = True, env_mode: Optional[EnvMode] = None) -> None:
         """
@@ -156,8 +178,18 @@ class Config:
         raw_cache_ttl = os.getenv("CACHE_TTL", "3600")
         self.CACHE_TTL = _parse_int("CACHE_TTL", raw_cache_ttl)
 
+        raw_cache_negative_ttl = os.getenv("CACHE_NEGATIVE_TTL", "60")
+        self.CACHE_NEGATIVE_TTL = _parse_int("CACHE_NEGATIVE_TTL", raw_cache_negative_ttl)
+
         raw_cache_max_size = os.getenv("CACHE_MAX_SIZE", "1000")
         self.CACHE_MAX_SIZE = _parse_int("CACHE_MAX_SIZE", raw_cache_max_size)
+
+        self.CACHE_KEY_MODE = os.getenv("CACHE_KEY_MODE", "hash").strip().lower()
+
+        raw_batch_item_include_dict_type = os.getenv("BATCH_ITEM_INCLUDE_DICT_TYPE", "true")
+        self.BATCH_ITEM_INCLUDE_DICT_TYPE = _parse_bool(
+            "BATCH_ITEM_INCLUDE_DICT_TYPE", raw_batch_item_include_dict_type
+        )
 
         raw_keepalive = os.getenv("HTTPX_MAX_KEEPALIVE_CONNECTIONS", "20")
         self.HTTPX_MAX_KEEPALIVE_CONNECTIONS = _parse_int(
@@ -172,6 +204,18 @@ class Config:
 
         raw_batch_concurrency = os.getenv("BATCH_CONCURRENCY", "5")
         self.BATCH_CONCURRENCY = _parse_int("BATCH_CONCURRENCY", raw_batch_concurrency)
+
+        # 上游重试参数：仅在幂等请求 & 特定错误码/网络异常时触发
+        raw_retry_max_attempts = os.getenv("UPSTREAM_RETRY_MAX_ATTEMPTS", "3")
+        self.UPSTREAM_RETRY_MAX_ATTEMPTS = _parse_int(
+            "UPSTREAM_RETRY_MAX_ATTEMPTS", raw_retry_max_attempts
+        )
+
+        raw_retry_base_delay = os.getenv("UPSTREAM_RETRY_BASE_DELAY", "0.2")
+        self.UPSTREAM_RETRY_BASE_DELAY = _parse_float("UPSTREAM_RETRY_BASE_DELAY", raw_retry_base_delay)
+
+        raw_retry_max_delay = os.getenv("UPSTREAM_RETRY_MAX_DELAY", "2.0")
+        self.UPSTREAM_RETRY_MAX_DELAY = _parse_float("UPSTREAM_RETRY_MAX_DELAY", raw_retry_max_delay)
         
         # 自动验证配置（除非明确禁用）
         if validate:
@@ -218,8 +262,20 @@ class Config:
         # 缓存参数
         if self.CACHE_TTL <= 0:
             raise ConfigError(f"无效的 CACHE_TTL: {self.CACHE_TTL}，必须大于 0")
+        if self.CACHE_NEGATIVE_TTL <= 0:
+            raise ConfigError(
+                f"无效的 CACHE_NEGATIVE_TTL: {self.CACHE_NEGATIVE_TTL}，必须大于 0"
+            )
         if self.CACHE_MAX_SIZE <= 0:
             raise ConfigError(f"无效的 CACHE_MAX_SIZE: {self.CACHE_MAX_SIZE}，必须大于 0")
+
+        # 缓存 key 模式
+        valid_key_modes = {"hash", "plain", "hash_with_plain"}
+        if self.CACHE_KEY_MODE not in valid_key_modes:
+            raise ConfigError(
+                f"无效的 CACHE_KEY_MODE: {self.CACHE_KEY_MODE}，必须是以下之一: "
+                + ", ".join(sorted(valid_key_modes))
+            )
 
         # httpx 连接池参数
         if self.HTTPX_MAX_CONNECTIONS <= 0:
@@ -242,6 +298,22 @@ class Config:
         # 批量查询内部并发上限（只影响上游请求）
         if self.BATCH_CONCURRENCY <= 0:
             raise ConfigError(f"无效的 BATCH_CONCURRENCY: {self.BATCH_CONCURRENCY}，必须大于 0")
+
+        # 上游重试参数
+        if self.UPSTREAM_RETRY_MAX_ATTEMPTS <= 0:
+            raise ConfigError(
+                f"无效的 UPSTREAM_RETRY_MAX_ATTEMPTS: {self.UPSTREAM_RETRY_MAX_ATTEMPTS}，必须大于 0"
+            )
+        if self.UPSTREAM_RETRY_BASE_DELAY < 0:
+            raise ConfigError(
+                f"无效的 UPSTREAM_RETRY_BASE_DELAY: {self.UPSTREAM_RETRY_BASE_DELAY}，必须 ≥ 0"
+            )
+        if self.UPSTREAM_RETRY_MAX_DELAY <= 0:
+            raise ConfigError(
+                f"无效的 UPSTREAM_RETRY_MAX_DELAY: {self.UPSTREAM_RETRY_MAX_DELAY}，必须大于 0"
+            )
+        if self.UPSTREAM_RETRY_MAX_DELAY < self.UPSTREAM_RETRY_BASE_DELAY:
+            raise ConfigError("UPSTREAM_RETRY_MAX_DELAY 不能小于 UPSTREAM_RETRY_BASE_DELAY")
     
     def get_server_address(self) -> str:
         """获取完整的服务器地址。"""
