@@ -6,6 +6,7 @@
 
 import time
 
+from .config import config
 from .logger import logger
 
 
@@ -84,5 +85,5 @@ class RateLimiter:
         logger.info("重置限流器(全局)")
 
 
-# 全局限流器实例（默认每分钟 60 个上游请求）
-rate_limiter = RateLimiter(requests_per_minute=60)
+# 全局限流器实例（默认值由 Config 统一管理，支持环境变量配置）
+rate_limiter = RateLimiter(requests_per_minute=config.REQUESTS_PER_MINUTE)

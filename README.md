@@ -157,32 +157,53 @@ docker ps
 
 ### 环境变量
 
-创建 `.env` 文件来自定义配置(可选):
+创建 `.env` 文件来自定义配置（可选，**仅开发模式会自动加载**）。
 
-```bash
-# 复制示例配置文件
-cp .env.example .env
-```
+你可以直接在项目根目录新建 `.env`，并按需填写下方“配置示例”中的环境变量。
+
+### 运行模式（APP_ENV）
+
+配置加载策略由 `APP_ENV` 统一控制，避免在各模块分散判断：
+
+- `development`（默认）：会自动读取本地 `.env`（便于开发）
+- `testing`：pytest 运行时会自动进入测试模式，不会读取 `.env`（避免本地配置污染测试）
+- `production`：不会读取 `.env`，建议由部署平台/容器环境注入环境变量
 
 支持的配置项:
 
 | 环境变量 | 说明 | 默认值 |
 |---------|------|--------|
+| `APP_ENV` | 运行模式：development/testing/production（或 dev/test/prod） | `development` |
 | `SERVER_HOST` | 服务器监听地址 | `0.0.0.0` |
 | `SERVER_PORT` | 服务器端口 | `8000` |
 | `HTTP_TIMEOUT` | HTTP 请求超时时间(秒) | `30.0` |
 | `LOG_LEVEL` | 日志级别 | `INFO` |
 | `NAVER_BASE_URL` | Naver API 基础 URL | `https://korean.dict.naver.com/api3` |
+| `REQUESTS_PER_MINUTE` | 上游（Naver）请求限流（每分钟，**全局共享**） | `60` |
+| `CACHE_TTL` | 缓存 TTL（秒） | `3600` |
+| `CACHE_MAX_SIZE` | 缓存最大条目数 | `1000` |
+| `HTTPX_MAX_KEEPALIVE_CONNECTIONS` | httpx keep-alive 连接上限 | `20` |
+| `HTTPX_MAX_CONNECTIONS` | httpx 总连接上限 | `100` |
+| `HTTPX_KEEPALIVE_EXPIRY` | keep-alive 连接过期时间（秒） | `30.0` |
+| `BATCH_CONCURRENCY` | 批量查询内部并发上限（仅限制访问上游的瞬时并发） | `5` |
 
 ### 配置示例
 
 **.env 文件示例:**
 
 ```env
+APP_ENV=development
 SERVER_HOST=127.0.0.1
 SERVER_PORT=9000
 HTTP_TIMEOUT=60.0
 LOG_LEVEL=DEBUG
+REQUESTS_PER_MINUTE=60
+CACHE_TTL=3600
+CACHE_MAX_SIZE=1000
+HTTPX_MAX_KEEPALIVE_CONNECTIONS=20
+HTTPX_MAX_CONNECTIONS=100
+HTTPX_KEEPALIVE_EXPIRY=30.0
+BATCH_CONCURRENCY=5
 ```
 
 ### 配置验证
@@ -191,10 +212,18 @@ LOG_LEVEL=DEBUG
 
 | 配置项 | 验证规则 | 无效示例 |
 |-------|---------|---------|
+| `APP_ENV` | development/testing/production（或 dev/test/prod） | `staging` |
 | `SERVER_PORT` | 1-65535 | `0`, `99999` |
 | `HTTP_TIMEOUT` | > 0 且 ≤ 300 | `0`, `-1`, `500` |
 | `LOG_LEVEL` | DEBUG/INFO/WARNING/ERROR/CRITICAL | `TRACE`, `debug`(小写) |
 | `NAVER_BASE_URL` | 必须以 http:// 或 https:// 开头 | `ftp://...`, `example.com` |
+| `REQUESTS_PER_MINUTE` | > 0 | `0`, `-1` |
+| `CACHE_TTL` | > 0 | `0`, `-1` |
+| `CACHE_MAX_SIZE` | > 0 | `0`, `-1` |
+| `HTTPX_MAX_CONNECTIONS` | > 0 | `0`, `-1` |
+| `HTTPX_MAX_KEEPALIVE_CONNECTIONS` | ≥ 0 且 ≤ HTTPX_MAX_CONNECTIONS | `-1`, `1000`(大于 max_connections) |
+| `HTTPX_KEEPALIVE_EXPIRY` | > 0 | `0`, `-1` |
+| `BATCH_CONCURRENCY` | > 0 | `0`, `-1` |
 
 **配置错误示例:**
 
@@ -475,11 +504,11 @@ LOG_LEVEL=ERROR  # 仅显示错误
 
 **限流配置:**
 
-修改 `src/rate_limiter.py`:
+通过环境变量调整（推荐）：
 
-```python
-# 调整限流参数（每分钟允许访问上游 Naver 的最大次数）
-rate_limiter = RateLimiter(requests_per_minute=60)
+```env
+# 每分钟允许访问上游 Naver 的最大次数（全局共享）
+REQUESTS_PER_MINUTE=60
 ```
 
 ### 错误处理机制
@@ -517,14 +546,14 @@ except ConfigError as e:
 
 **配置:**
 
-修改 `src/cache.py`:
+通过环境变量调整（推荐）：
 
-```python
-# 调整缓存参数
-cache = TTLCache(
-    max_size=1000,  # 最大缓存条目数
-    ttl=3600        # 过期时间(秒)
-)
+```env
+# 缓存最大条目数
+CACHE_MAX_SIZE=1000
+
+# 缓存 TTL（秒）
+CACHE_TTL=3600
 ```
 
 ### 代码质量工具
@@ -742,6 +771,7 @@ git commit -m "feat: 新功能"
 
 - `words` (array[string], 必需): 要查询的单词列表(最多 10 个)
 - `dict_type` (string, 可选): 辞典类型,默认 `"ko-zh"`
+- `return_cached_json` (bool, 可选): 是否对缓存命中条目直接返回 `cached_json`（避免反序列化与拼装），默认 `false`
 
 **返回:**
 
@@ -761,7 +791,9 @@ git commit -m "feat: 新功能"
       "success": true,
       "count": 1,
       "results": [...],
-      "from_cache": true
+      "from_cache": true,
+      "deduped": false,
+      "source_word": "안녕하세요"
     },
     {
       "word": "",
@@ -769,13 +801,29 @@ git commit -m "feat: 新功能"
       "error": "输入验证失败",
       "error_type": "validation",
       "details": "搜索词不能为空",
-      "from_cache": false
+      "from_cache": false,
+      "deduped": false
     },
     ...
   ],
   "latency": 0.234
 }
 ```
+
+**去重行为说明:**
+
+- 批量查询会对“缓存 miss 的词”按规范化结果去重，只对上游发起一次请求
+- 对重复项回填结果时会增加：
+  - `deduped`: 是否为去重回填（true/false）
+  - `source_word`: 本次去重组的源词（即实际用于请求/缓存的规范化词）
+
+**并发上限说明:**
+
+- 批量查询内部使用 `BATCH_CONCURRENCY` 控制对上游的瞬时并发，避免瞬时并发把上游打爆
+
+**return_cached_json 说明:**
+
+- 当 `return_cached_json=true` 且 `from_cache=true` 时，单条结果会包含 `cached_json`（字符串），并**可能不包含** `count/results`（调用方可自行解析）
 
 **性能特点:**
 
@@ -864,11 +912,11 @@ LOG_LEVEL=INFO
 
 - 默认限制为 60 上游请求/分钟（全局共享）
 - 等待一段时间后重试
-- 如需调整限流配置,修改 `src/rate_limiter.py` 中的参数:
+- 如需调整限流配置，在环境变量中设置 `REQUESTS_PER_MINUTE`:
 
-```python
-# 默认: 60 上游请求/分钟
-rate_limiter = RateLimiter(requests_per_minute=60)
+```env
+# 默认: 60 上游请求/分钟（全局共享）
+REQUESTS_PER_MINUTE=60
 ```
 
 #### 4. 输入验证错误

@@ -7,6 +7,7 @@ import hashlib
 import time
 from typing import Any, Dict, Optional, Tuple
 
+from .config import config
 from .logger import logger
 
 
@@ -146,5 +147,5 @@ class TTLCache:
 
 
 # 全局缓存实例
-# 1 小时 TTL，最多 1000 条
-cache = TTLCache(max_size=1000, ttl=3600)
+# 默认值由 Config 统一管理（支持环境变量配置）
+cache = TTLCache(max_size=config.CACHE_MAX_SIZE, ttl=config.CACHE_TTL)

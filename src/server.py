@@ -290,7 +290,8 @@ async def search_word(word: str, dict_type: DictType = "ko-zh") -> str:
 
 async def _batch_search_words_impl(
     words: list[str], 
-    dict_type: DictType = "ko-zh"
+    dict_type: DictType = "ko-zh",
+    return_cached_json: bool = False,
 ) -> str:
     """批量查询核心实现（便于单元测试与复用）。"""
     start_time = time.time()
@@ -335,20 +336,34 @@ async def _batch_search_words_impl(
                 "error_type": "validation",
                 "details": str(e),
                 "from_cache": False,
+                "deduped": False,
             }
             continue
 
         cached = cache.get(normalized_word, dict_type)
         if cached:
             metrics.record_cache_hit()
-            cached_data = json.loads(cached)
-            results[idx] = {
-                "word": normalized_word,
-                "success": True,
-                "count": cached_data.get("count", len(cached_data.get("results", []))),
-                "results": cached_data.get("results", []),
-                "from_cache": True,
-            }
+            if return_cached_json:
+                # 直接返回缓存 JSON，避免反序列化与拼装（调用方可自行解析）
+                results[idx] = {
+                    "word": normalized_word,
+                    "success": True,
+                    "from_cache": True,
+                    "cached_json": cached,
+                    "deduped": False,
+                    "source_word": normalized_word,
+                }
+            else:
+                cached_data = json.loads(cached)
+                results[idx] = {
+                    "word": normalized_word,
+                    "success": True,
+                    "count": cached_data.get("count", len(cached_data.get("results", []))),
+                    "results": cached_data.get("results", []),
+                    "from_cache": True,
+                    "deduped": False,
+                    "source_word": normalized_word,
+                }
             continue
 
         metrics.record_cache_miss()
@@ -362,7 +377,9 @@ async def _batch_search_words_impl(
             # 限流时不访问上游：对 miss 的词填充 rate_limit 错误，其余（缓存命中/校验失败）保留
             remaining = rate_limiter.get_remaining_tokens()
             for w in miss_words:
-                for idx in miss_indices_by_word[w]:
+                indices = miss_indices_by_word[w]
+                source_idx = indices[0]
+                for idx in indices:
                     results[idx] = {
                         "word": w,
                         "success": False,
@@ -370,13 +387,19 @@ async def _batch_search_words_impl(
                         "error_type": "rate_limit",
                         "details": f"请求过于频繁，请稍后重试。当前剩余配额: {remaining}",
                         "from_cache": False,
+                        "deduped": idx != source_idx,
+                        "source_word": w,
                     }
         else:
             async with NaverClient() as client:
+                semaphore = asyncio.Semaphore(config.BATCH_CONCURRENCY)
+
                 async def fetch_one(w: str) -> dict[str, Any]:
                     """获取并解析单个词（仅处理缓存 miss 的词）。"""
                     try:
-                        data = await client.search(w, dict_type)
+                        # 批量内部并发上限：只限制访问上游的瞬时并发，避免把上游打爆
+                        async with semaphore:
+                            data = await client.search(w, dict_type)
                         parsed = parse_search_results(data)
 
                         # 缓存结果（与 search_word 一致）
@@ -389,6 +412,8 @@ async def _batch_search_words_impl(
                             "count": len(parsed),
                             "results": parsed,
                             "from_cache": False,
+                            "deduped": False,
+                            "source_word": w,
                         }
                     except ValidationError as e:
                         metrics.record_error("validation")
@@ -399,6 +424,8 @@ async def _batch_search_words_impl(
                             "error_type": "validation",
                             "details": str(e),
                             "from_cache": False,
+                            "deduped": False,
+                            "source_word": w,
                         }
                     except httpx.TimeoutException:
                         metrics.record_error("timeout")
@@ -409,6 +436,8 @@ async def _batch_search_words_impl(
                             "error_type": "timeout",
                             "details": f"API 请求超时，请稍后重试（超时时间: {config.HTTP_TIMEOUT}s）",
                             "from_cache": False,
+                            "deduped": False,
+                            "source_word": w,
                         }
                     except httpx.HTTPStatusError as e:
                         status_code = e.response.status_code
@@ -428,6 +457,8 @@ async def _batch_search_words_impl(
                             "error_type": "http_error",
                             "details": f"上游返回 HTTP {status_code}",
                             "from_cache": False,
+                            "deduped": False,
+                            "source_word": w,
                         }
                     except httpx.RequestError:
                         metrics.record_error("network_error")
@@ -438,6 +469,8 @@ async def _batch_search_words_impl(
                             "error_type": "network_error",
                             "details": "无法连接到 Naver API，请检查网络连接",
                             "from_cache": False,
+                            "deduped": False,
+                            "source_word": w,
                         }
                     except (KeyError, ValueError, TypeError):
                         metrics.record_error("parse_error")
@@ -448,6 +481,8 @@ async def _batch_search_words_impl(
                             "error_type": "parse_error",
                             "details": "API 返回的数据格式异常，可能是 API 接口发生了变化",
                             "from_cache": False,
+                            "deduped": False,
+                            "source_word": w,
                         }
                     except Exception:
                         metrics.record_error("unknown")
@@ -458,6 +493,8 @@ async def _batch_search_words_impl(
                             "error_type": "unknown",
                             "details": "服务内部错误，请稍后重试",
                             "from_cache": False,
+                            "deduped": False,
+                            "source_word": w,
                         }
 
                 fetched = await asyncio.gather(*(fetch_one(w) for w in miss_words))
@@ -465,8 +502,14 @@ async def _batch_search_words_impl(
 
                 for w in miss_words:
                     item = fetched_by_word[w]
-                    for idx in miss_indices_by_word[w]:
-                        results[idx] = item
+                    indices = miss_indices_by_word[w]
+                    source_idx = indices[0]
+                    for idx in indices:
+                        # 去重回填：同一个 miss 词只访问一次上游，但要对重复项标记 deduped/source_word
+                        per_item = dict(item)
+                        per_item["deduped"] = idx != source_idx
+                        per_item["source_word"] = w
+                        results[idx] = per_item
 
     # 记录指标
     latency = time.time() - start_time
@@ -496,6 +539,7 @@ async def _batch_search_words_impl(
 async def batch_search_words(
     words: list[str],
     dict_type: DictType = "ko-zh",
+    return_cached_json: bool = False,
 ) -> str:
     """
     批量并发搜索多个单词。
@@ -526,7 +570,7 @@ async def batch_search_words(
             "latency": 0.234
         }
     """
-    return await _batch_search_words_impl(words, dict_type)
+    return await _batch_search_words_impl(words, dict_type, return_cached_json)
 
 
 async def cleanup() -> None:
@@ -585,11 +629,19 @@ if __name__ == "__main__":
     try:
         logger.info("=" * 60)
         logger.info("启动 Naver Dictionary MCP 服务器")
+        logger.info(f"运行模式: {config.APP_ENV}")
         logger.info(f"服务器地址: {config.get_server_address()}")
         logger.info(f"日志级别: {config.LOG_LEVEL}")
         logger.info(f"HTTP 超时: {config.HTTP_TIMEOUT}s")
         logger.info(f"缓存配置: 最大 {cache.max_size} 项, TTL {cache.ttl}s")
         logger.info(f"限流配置: {rate_limiter.requests_per_minute} 请求/分钟")
+        logger.info(
+            "连接池配置: max_connections=%s, max_keepalive=%s, keepalive_expiry=%ss",
+            config.HTTPX_MAX_CONNECTIONS,
+            config.HTTPX_MAX_KEEPALIVE_CONNECTIONS,
+            config.HTTPX_KEEPALIVE_EXPIRY,
+        )
+        logger.info(f"批量并发上限: {config.BATCH_CONCURRENCY}")
         logger.info("=" * 60)
         
         mcp.run(

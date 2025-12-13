@@ -54,9 +54,9 @@ class NaverClientPool:
                 timeout=config.HTTP_TIMEOUT,
                 follow_redirects=True,
                 limits=httpx.Limits(
-                    max_keepalive_connections=20,
-                    max_connections=100,
-                    keepalive_expiry=30.0,
+                    max_keepalive_connections=config.HTTPX_MAX_KEEPALIVE_CONNECTIONS,
+                    max_connections=config.HTTPX_MAX_CONNECTIONS,
+                    keepalive_expiry=config.HTTPX_KEEPALIVE_EXPIRY,
                 ),
                 headers={
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -105,6 +105,11 @@ class NaverClient:
             self.client = httpx.AsyncClient(
                 timeout=config.HTTP_TIMEOUT,
                 follow_redirects=True,
+                limits=httpx.Limits(
+                    max_keepalive_connections=config.HTTPX_MAX_KEEPALIVE_CONNECTIONS,
+                    max_connections=config.HTTPX_MAX_CONNECTIONS,
+                    keepalive_expiry=config.HTTPX_KEEPALIVE_EXPIRY,
+                ),
                 headers={
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                     "Accept": "application/json,*/*",

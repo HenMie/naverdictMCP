@@ -244,6 +244,12 @@ class TestBatchSearchWordsTool:
             assert payload["results"][1]["success"] is False
             assert payload["results"][1]["error_type"] == "validation"
 
+            # 去重回填标记：第 3 个词复用第 1 个词的上游结果
+            assert payload["results"][0]["deduped"] is False
+            assert payload["results"][0]["source_word"] == "안녕하세요"
+            assert payload["results"][2]["deduped"] is True
+            assert payload["results"][2]["source_word"] == "안녕하세요"
+
     @pytest.mark.asyncio
     async def test_batch_search_words_rate_limit_only_affects_misses(self):
         # 预置一个缓存命中项
@@ -272,3 +278,29 @@ class TestBatchSearchWordsTool:
             assert payload["results"][0]["success"] is True  # 缓存命中不受限流影响
             assert payload["results"][1]["success"] is False
             assert payload["results"][1]["error_type"] == "rate_limit"
+
+    @pytest.mark.asyncio
+    async def test_batch_search_words_return_cached_json(self):
+        cached = json.dumps(
+            {
+                "success": True,
+                "word": "안녕하세요",
+                "dict_type": "ko-zh",
+                "count": 0,
+                "results": [],
+            },
+            ensure_ascii=False,
+        )
+        cache.set("안녕하세요", "ko-zh", cached)
+
+        result = await _batch_search_words_impl(
+            words=["안녕하세요"],
+            dict_type="ko-zh",
+            return_cached_json=True,
+        )
+        payload = json.loads(result)
+
+        assert payload["success"] is True
+        assert payload["results"][0]["from_cache"] is True
+        assert payload["results"][0]["cached_json"] == cached
+        assert "results" not in payload["results"][0]  # 避免反序列化与拼装
