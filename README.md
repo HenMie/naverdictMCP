@@ -130,7 +130,7 @@ make docker-run
 - **镜像仓库**：`chouann/naverdictmcp`
 - **触发条件**：
   - **push 到 `main`**：发布 `latest` 与 `sha-<短提交>` 两个标签
-  - **push 语义化 tag**（如 `v0.1.0` 或 `0.1.0`）：发布对应 tag 标签（例如 `v0.1.0`）
+  - **push 语义化 tag**（如 `v1.0.0` 或 `1.0.0`）：发布对应 tag 标签（例如 `v1.0.0`）
   - **手动触发**：在 GitHub Actions 页面点击运行
 
 **你需要在 GitHub 仓库里配置 Secrets：**
