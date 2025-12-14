@@ -1,6 +1,6 @@
 [project]
 name = "naver-dict-mcp"
-version = "1.0.0"
+version = "1.0.1"
 description = "Naver Dictionary MCP server using FastMCP 2.0 with Streamable HTTP"
 readme = "README.md"
 requires-python = ">=3.10"
