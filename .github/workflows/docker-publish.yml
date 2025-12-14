@@ -13,15 +13,16 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # 同一分支/同一 tag 只保留最新一次发布，避免并发 push 导致镜像标签互相覆盖
+  # 同一分支/同一 tag 串行发布（排队执行），避免并发 push 导致镜像标签互相覆盖
   group: docker-publish-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   docker:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # 创建 GitHub Release 需要写权限（最小权限：contents: write）
+      contents: write
 
     env:
       # Docker Hub 镜像名（仓库名：chouann/naverdictmcp）
@@ -71,5 +72,15 @@ jobs:
           # 使用 GitHub Actions 内置缓存加速后续构建
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: 创建 GitHub Release
+        # 仅在 tag 发布时创建 Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          # 默认值就是 github.ref_name，这里显式指定，方便阅读/维护
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
 
 
