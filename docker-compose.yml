@@ -1,11 +1,18 @@
 services:
   naver-dict-mcp:
-    build: .
+    image: chouann/naverdictmcp:latest
     ports:
       - "${SERVER_PORT:-8000}:8000"
-    env_file:
-      - .env
     environment:
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=8000
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - HTTP_TIMEOUT=${HTTP_TIMEOUT:-30.0}
+      - REQUESTS_PER_MINUTE=${REQUESTS_PER_MINUTE:-60}
     restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.socket(); s.settimeout(5); s.connect(('localhost', 8000)); s.close()\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
