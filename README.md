@@ -9,11 +9,11 @@
 
 - 🔍 **多语言辞典**: 韩中/韩英辞典查询，返回释义、发音、例句
 - ⚡ **高性能**: 异步架构 + 连接池 + 智能缓存（TTL + LRU）
-- 📦 **批量查询**: 支持一次查询多个单词，并发处理
+- 📦 **统一查询**: 仅暴露 `search_words` 工具，单查/批查共用（最多 30 词）
 - 🚦 **限流保护**: 令牌桶算法，全局共享上游限流（默认 60 请求/分钟）
 - 🛡️ **健壮性**: 输入验证 + 分类错误处理 + 自动重试
 - 🐳 **Docker 就绪**: 多架构镜像（amd64/arm64），~110MB
-- ✅ **高质量**: 90% 测试覆盖率 + MyPy 严格类型检查
+- ✅ **高质量**: 90% 测试覆盖率 + MyPy 严格类型检查 + Ruff 代码规范
 
 ## 🚀 快速开始
 
@@ -44,7 +44,7 @@ python src/server.py
 
 ## 📖 使用示例
 
-### 单词查询
+### 统一查询（单词）
 
 ```bash
 curl -X POST http://localhost:8000/mcp \
@@ -54,16 +54,16 @@ curl -X POST http://localhost:8000/mcp \
     "id": 1,
     "method": "tools/call",
     "params": {
-      "name": "search_word",
+      "name": "search_words",
       "arguments": {
-        "word": "안녕하세요",
+        "words": ["안녕하세요"],
         "dict_type": "ko-zh"
       }
     }
   }'
 ```
 
-### 批量查询
+### 统一查询（批量）
 
 ```bash
 curl -X POST http://localhost:8000/mcp \
@@ -73,7 +73,7 @@ curl -X POST http://localhost:8000/mcp \
     "id": 2,
     "method": "tools/call",
     "params": {
-      "name": "batch_search_words",
+      "name": "search_words",
       "arguments": {
         "words": ["안녕하세요", "감사합니다", "학교"],
         "dict_type": "ko-zh"
@@ -121,6 +121,8 @@ CACHE_MAX_SIZE=1000
 </details>
 
 ## 🐳 Docker 部署
+
+本项目 Docker 镜像采用**多阶段构建**，并包含运行时最小化与安全配置（Docker 优化）。
 
 ### 方式一：Docker Hub 镜像（推荐）
 
@@ -172,13 +174,13 @@ make docker-run
 
 ## 🔧 API 参考
 
-### search_word
+### search_words
 
-查询单个单词。
+统一查询单词（单查和批查共用）。
 
 **参数:**
 
-- `word` (string, 必需): 要查询的单词或短语（最长 100 字符）
+- `words` (array[string], 必需): 要查询的单词列表（1..30，每项最长 100 字符）
 - `dict_type` (string, 可选): 辞典类型 `"ko-zh"`（默认）或 `"ko-en"`
 
 **返回:** JSON 字符串，包含释义、发音、例句等
@@ -187,37 +189,9 @@ make docker-run
 
 ```json
 {
-  "name": "search_word",
+  "name": "search_words",
   "arguments": {
-    "word": "안녕하세요",
-    "dict_type": "ko-zh"
-  }
-}
-```
-
-### batch_search_words
-
-批量查询多个单词（最多 10 个）。
-
-**参数:**
-
-- `words` (array[string], 必需): 要查询的单词列表
-- `dict_type` (string, 可选): 辞典类型，默认 `"ko-zh"`
-- `return_cached_json` (bool, 可选): 是否返回缓存 JSON，默认 `false`
-
-**特性:**
-
-- 并发处理，比顺序查询快 5-10 倍
-- 自动去重缓存 miss 的词
-- 单个查询失败不影响其他查询
-
-**示例:**
-
-```json
-{
-  "name": "batch_search_words",
-  "arguments": {
-    "words": ["안녕하세요", "감사합니다", "미안합니다"],
+    "words": ["안녕하세요"],
     "dict_type": "ko-zh"
   }
 }

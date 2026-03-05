@@ -96,6 +96,143 @@ def _strip_html_tags(text: str) -> str:
     return clean_html_tags(text)
 
 
+def _dedupe_keep_order(values: List[str], max_items: int = 0) -> List[str]:
+    """按输入顺序去重，可选限制最大数量。"""
+    seen: set[str] = set()
+    deduped: List[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+        if max_items > 0 and len(deduped) >= max_items:
+            break
+    return deduped
+
+
+def _meaning_key(meaning: Union[str, Dict[str, Any]]) -> str:
+    """生成释义去重 key。"""
+    if isinstance(meaning, dict):
+        return str(meaning.get("text", ""))
+    return meaning
+
+
+def _extract_meanings_and_related(
+    means_collector: List[Dict[str, Any]],
+    source_type: str,
+) -> tuple[List[Union[str, Dict[str, Any]]], List[str]]:
+    """提取释义与相关词。"""
+    meanings: List[Union[str, Dict[str, Any]]] = []
+    related_words_all: List[str] = []
+
+    for collector in means_collector:
+        pos2 = clean_html_tags(str(collector.get("partOfSpeech2", "")))
+        for mean in collector.get("means", []):
+            meaning_value = str(mean.get("value", ""))
+            if not meaning_value:
+                continue
+            related_words = extract_related_words(meaning_value)
+            related_words_all.extend(related_words)
+
+            clean_text = clean_html_tags(meaning_value)
+            formatted_text = f"[{pos2}] {clean_text}" if pos2 else clean_text
+            if source_type == "OPEN":
+                formatted_text = f"[OPEN] {formatted_text}"
+
+            if related_words:
+                meanings.append(
+                    {
+                        "text": formatted_text,
+                        "related_words": _dedupe_keep_order(related_words),
+                        "source_type": source_type,
+                    }
+                )
+            else:
+                meanings.append(formatted_text)
+
+    return meanings, _dedupe_keep_order(related_words_all)
+
+
+def _extract_examples(means_collector: List[Dict[str, Any]]) -> List[str]:
+    """从 meansCollector 提取并去重例句。"""
+    examples: List[str] = []
+    for collector in means_collector:
+        for mean in collector.get("means", []):
+            example_ori = clean_html_tags(str(mean.get("exampleOri", "")))
+            example_trans = clean_html_tags(str(mean.get("exampleTrans", "")))
+            if not example_ori:
+                continue
+            if example_trans:
+                examples.append(f"{example_ori} → {example_trans}")
+            else:
+                examples.append(example_ori)
+    return _dedupe_keep_order(examples, max_items=5)
+
+
+def _extract_pronunciation(item: Dict[str, Any]) -> str:
+    """提取发音字段。"""
+    pron_list = item.get("searchPhoneticSymbolList", [])
+    if not isinstance(pron_list, list) or not pron_list:
+        return ""
+    return _strip_html_tags(str(pron_list[0].get("symbolValue", "")))
+
+
+def _extract_word(item: Dict[str, Any]) -> str:
+    """提取词条文本。"""
+    raw_word = item.get("expEntry") or item.get("entryName") or item.get("entry") or ""
+    return _strip_html_tags(str(raw_word))
+
+
+def _parse_section_items(items: List[Dict[str, Any]], source_type: str) -> List[Dict[str, Any]]:
+    """解析单个 section（WORD/OPEN）的 items。"""
+    parsed: List[Dict[str, Any]] = []
+    for item in items:
+        word = _extract_word(item)
+        if not word:
+            continue
+        means_collector = item.get("meansCollector", [])
+        if not isinstance(means_collector, list):
+            means_collector = []
+
+        meanings, related_words = _extract_meanings_and_related(means_collector, source_type)
+        parsed.append(
+            {
+                "word": word,
+                "pronunciation": _extract_pronunciation(item),
+                "meanings": meanings,
+                "examples": _extract_examples(means_collector),
+                "related_words": related_words,
+                "source_type": source_type,
+                "source_types": [source_type],
+            }
+        )
+    return parsed
+
+
+def _merge_entries(base: Dict[str, Any], incoming: Dict[str, Any]) -> None:
+    """按词条合并多个来源结果。"""
+    if not base.get("pronunciation") and incoming.get("pronunciation"):
+        base["pronunciation"] = incoming["pronunciation"]
+
+    meaning_seen = {_meaning_key(m) for m in base.get("meanings", [])}
+    for meaning in incoming.get("meanings", []):
+        key = _meaning_key(meaning)
+        if key in meaning_seen:
+            continue
+        meaning_seen.add(key)
+        base.setdefault("meanings", []).append(meaning)
+
+    merged_examples = base.get("examples", []) + incoming.get("examples", [])
+    base["examples"] = _dedupe_keep_order(merged_examples, max_items=5)
+
+    merged_related = base.get("related_words", []) + incoming.get("related_words", [])
+    base["related_words"] = _dedupe_keep_order(merged_related)
+
+    source_types = set(base.get("source_types", [])) | set(incoming.get("source_types", []))
+    base["source_types"] = sorted(source_types)
+    base["source_type"] = "WORD" if "WORD" in source_types else "OPEN"
+
+
 def parse_search_results(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     解析 Naver 辞典 API 的 JSON 响应。
@@ -125,92 +262,30 @@ def parse_search_results(data: Dict[str, Any]) -> List[Dict[str, Any]]:
         - meanings: 释义列表
         - examples: 例句列表
     """
-    results = []
-    
+    results: List[Dict[str, Any]] = []
+
     search_result_map = data.get("searchResultMap", {})
     search_result_list_map = search_result_map.get("searchResultListMap", {})
-    
-    # 从 WORD 部分获取条目（官方词典）
-    word_section = search_result_list_map.get("WORD", {})
-    items = word_section.get("items", [])
-    
-    for item in items:
-        result: Dict[str, Any] = {}
-        
-        # 提取基本信息
-        exp_entry = item.get("expEntry", "")
-        result["word"] = _strip_html_tags(exp_entry)
-        
-        # 从 searchPhoneticSymbolList 提取发音
-        pron_list = item.get("searchPhoneticSymbolList", [])
-        if pron_list:
-            pron_value = pron_list[0].get("symbolValue", "")
-            result["pronunciation"] = _strip_html_tags(pron_value)
-        else:
-            result["pronunciation"] = ""
-        
-        # 从 meansCollector 提取释义
-        meanings: List[Union[str, Dict[str, Any]]] = []
-        means_collector = item.get("meansCollector", [])
-        
-        for collector in means_collector:
-            # 获取词性
-            pos2 = collector.get("partOfSpeech2", "")
-            
-            # 获取释义
-            means_list = collector.get("means", [])
-            for mean in means_list:
-                meaning_value = mean.get("value", "")
-                if meaning_value:
-                    # 提取相关词
-                    related_words = extract_related_words(meaning_value)
-                    
-                    # 清理 HTML 得到纯文本
-                    clean_text = clean_html_tags(meaning_value)
-                    
-                    # 格式化：[词性] 释义
-                    if pos2:
-                        formatted_text = f"[{pos2}] {clean_text}"
-                    else:
-                        formatted_text = clean_text
-                    
-                    # 构建结构化数据
-                    if related_words:
-                        meanings.append({
-                            "text": formatted_text,
-                            "related_words": related_words
-                        })
-                    else:
-                        # 如果没有相关词，保持简单字符串格式（向后兼容）
-                        meanings.append(formatted_text)
-        
-        result["meanings"] = meanings
-        
-        # 从 meansCollector 提取例句
-        examples: List[str] = []
-        for collector in means_collector:
-            means_list = collector.get("means", [])
-            for mean in means_list:
-                example_ori = mean.get("exampleOri", "")
-                example_trans = mean.get("exampleTrans", "")
-                
-                if example_ori:
-                    # 使用 clean_html_tags 处理 HTML 实体和 autoLink
-                    example_ori_clean = clean_html_tags(example_ori)
-                    example_trans_clean = clean_html_tags(example_trans) if example_trans else ""
-                    
-                    if example_trans_clean:
-                        examples.append(f"{example_ori_clean} → {example_trans_clean}")
-                    else:
-                        examples.append(example_ori_clean)
-        
-        result["examples"] = examples
-        
-        # 只有找到单词时才添加
-        if result.get("word"):
-            results.append(result)
-    
-    return results
+
+    word_items = search_result_list_map.get("WORD", {}).get("items", [])
+    open_items = search_result_list_map.get("OPEN", {}).get("items", [])
+
+    if isinstance(word_items, list):
+        results.extend(_parse_section_items(word_items, "WORD"))
+    if isinstance(open_items, list):
+        results.extend(_parse_section_items(open_items, "OPEN"))
+
+    merged: Dict[str, Dict[str, Any]] = {}
+    for result in results:
+        key = str(result.get("word", ""))
+        if key == "":
+            continue
+        if key not in merged:
+            merged[key] = dict(result)
+            continue
+        _merge_entries(merged[key], result)
+
+    return list(merged.values())
 
 
 def format_results(results: List[Dict[str, Any]]) -> str:
@@ -229,6 +304,9 @@ def format_results(results: List[Dict[str, Any]]) -> str:
     output = []
     for i, result in enumerate(results, 1):
         lines = [f"\n【{i}】 {result.get('word', 'N/A')}"]
+
+        if result.get("source_types"):
+            lines.append(f"来源: {'/'.join(result['source_types'])}")
         
         if result.get("pronunciation"):
             lines.append(f"发音: {result['pronunciation']}")
@@ -249,9 +327,12 @@ def format_results(results: List[Dict[str, Any]]) -> str:
         
         if result.get("examples"):
             lines.append("例句:")
-            # 每个条目最多显示 3 个例句
-            for example in result["examples"][:3]:
+            # 每个条目最多显示 5 个例句
+            for example in result["examples"][:5]:
                 lines.append(f"  • {example}")
+
+        if result.get("related_words"):
+            lines.append(f"相关词: {', '.join(result['related_words'])}")
         
         output.append("\n".join(lines))
     

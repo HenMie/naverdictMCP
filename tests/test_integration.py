@@ -41,14 +41,14 @@ def reset_global_state():
     rate_limiter.reset()
 
 
-async def test_list_tools_only_two_tools(mcp_client):
+async def test_list_tools_only_search_words(mcp_client):
     tools = await mcp_client.list_tools()
     names = sorted(_tool_name(t) for t in tools)
-    assert names == ["batch_search_words", "search_word"]
+    assert names == ["search_words"]
 
 
-async def test_search_word_normalizes_word(mcp_client, sample_api_response):
-    """search_word 应在 server 层做 strip/规范化，并把规范化后的 word 返回给客户端。"""
+async def test_search_words_normalizes_word(mcp_client, sample_api_response):
+    """search_words 应在 server 层做 strip/规范化，并把规范化后的 word 返回给客户端。"""
     with patch("src.server.NaverClient") as mock_client_class:
         mock_client = AsyncMock()
         mock_client.search.return_value = sample_api_response
@@ -56,18 +56,18 @@ async def test_search_word_normalizes_word(mcp_client, sample_api_response):
         mock_client_class.return_value.__aexit__.return_value = None
 
         result = await mcp_client.call_tool(
-            "search_word",
-            {"word": "  안녕하세요  ", "dict_type": "ko-zh"},
+            "search_words",
+            {"words": ["  안녕하세요  "], "dict_type": "ko-zh"},
         )
         payload = json.loads(result.data)
 
         assert payload["success"] is True
-        assert payload["word"] == "안녕하세요"
+        assert payload["successful_results"][0]["word"] == "안녕하세요"
         mock_client.search.assert_awaited_once_with("안녕하세요", "ko-zh")
 
 
-async def test_batch_search_dedup_and_partial_success(mcp_client, sample_api_response):
-    """batch_search_words：去重 miss、结构化错误、整体 partial_success 语义。"""
+async def test_search_words_partial_success_with_grouped_results(mcp_client, sample_api_response):
+    """search_words：去重 miss、结构化错误、整体 partial_success 语义。"""
     with patch("src.server.NaverClient") as mock_client_class:
         mock_client = AsyncMock()
         mock_client.search.return_value = sample_api_response
@@ -75,14 +75,14 @@ async def test_batch_search_dedup_and_partial_success(mcp_client, sample_api_res
         mock_client_class.return_value.__aexit__.return_value = None
 
         result = await mcp_client.call_tool(
-            "batch_search_words",
+            "search_words",
             {"words": ["  안녕하세요  ", "", "안녕하세요"], "dict_type": "ko-zh"},
         )
         payload = json.loads(result.data)
 
         assert payload["success"] is False
         assert payload["partial_success"] is True
-        assert payload["count"] == 3
+        assert payload["total_count"] == 3
         assert payload["success_count"] == 2
         assert payload["fail_count"] == 1
 
@@ -90,5 +90,5 @@ async def test_batch_search_dedup_and_partial_success(mcp_client, sample_api_res
         mock_client.search.assert_awaited_once_with("안녕하세요", "ko-zh")
 
         # 第 2 个词是校验失败
-        assert payload["results"][1]["success"] is False
-        assert payload["results"][1]["error_type"] == "validation"
+        assert payload["failed_results"][0]["success"] is False
+        assert payload["failed_results"][0]["error_type"] == "validation"

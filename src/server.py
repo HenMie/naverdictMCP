@@ -29,12 +29,10 @@ from src.metrics import metrics
 from src.parser import parse_search_results
 from src.rate_limiter import rate_limiter
 from src.responses import (
-    build_batch_payload,
-    build_cached_json_item,
-    build_error_item,
-    build_success_item,
+    build_failed_result_item,
+    build_grouped_payload,
+    build_success_result_item,
     dumps_json,
-    patch_from_cache_flag,
 )
 
 # 初始化 FastMCP 服务器
@@ -42,6 +40,7 @@ mcp = FastMCP("Naver Dictionary")
 
 # 全局关闭事件
 _shutdown_event: Optional[asyncio.Event] = None
+MAX_WORDS_PER_REQUEST = 30
 
 
 def _normalize_word(word: str) -> str:
@@ -85,25 +84,15 @@ def _build_success_json(
     word: str,
     dict_type: str,
     results: list[dict[str, Any]],
-    from_cache: bool,
 ) -> str:
-    """构建成功响应 JSON（字符串）。
-
-    为保证 `search_word` 与 `batch_search_words` 子项字段一致，这里统一补齐：
-    - from_cache: 是否来自缓存
-    - deduped: 是否为批量去重回填（单查恒为 false）
-    - source_word: 去重源词（单查恒等于 word）
-    """
-
-    payload = build_success_item(
-        word=word,
-        dict_type=dict_type,
-        results=results,
-        from_cache=from_cache,
-        deduped=False,
-        source_word=word,
-        include_dict_type=True,
-    )
+    """构建缓存落盘用的成功响应 JSON（字符串）。"""
+    payload = {
+        "success": True,
+        "word": word,
+        "dict_type": dict_type,
+        "count": len(results),
+        "results": results,
+    }
     return dumps_json(payload)
 
 
@@ -217,7 +206,7 @@ def _try_consume_retry_token(tokens: int = 1) -> bool:
     """为“重试”额外消耗令牌（不计入 metrics.rate_limit 错误）。
 
     说明：
-    - 首次上游请求的令牌消耗由调用方（search_word/batch_search_words 的全局限流）负责
+    - 首次上游请求的令牌消耗由调用方（search_words 的全局限流）负责
     - 重试会额外产生上游请求，因此需要额外消耗令牌，确保不突破全局配额
     """
 
@@ -313,568 +302,402 @@ async def _upstream_search_with_retry(
     raise RuntimeError("上游请求失败")  # pragma: no cover
 
 
-async def _search_word_impl(word: str, dict_type: DictType = "ko-zh") -> str:
-    """
-    单词搜索的核心实现，包含完整的错误处理。
-    
-    Args:
-        word: 要搜索的单词
-        dict_type: 字典类型 - "ko-zh" 韩中辞典，"ko-en" 韩英辞典
-        
-    Returns:
-        JSON 格式的搜索结果，包含单词、发音、释义和例句
-        
-    错误响应格式:
-        {
-            "success": false,
-            "error": "错误信息",
-            "error_type": "validation|timeout|http_error|parse_error|rate_limit|unknown",
-            "details": "详细错误信息"
-        }
-    """
-    start_time = time.time()
-    normalized_word: Optional[str] = None
-
-    try:
-        # 统一规范化（保证缓存 key 与下游一致）
-        normalized_word = _normalize_word(word)
-
-        logger.info(f"收到搜索请求: word='{normalized_word}', dict_type={dict_type}")
-        
-        # 先尝试从缓存获取
-        cached_result = cache.get(normalized_word, dict_type)
-        if cached_result:
-            metrics.record_cache_hit()
-            latency = time.time() - start_time
-            metrics.record_request(success=True, latency=latency, endpoint="search")
-            logger.info(f"缓存命中: word='{normalized_word}', latency={latency:.3f}s")
-            # 缓存里存的是 from_cache=false 的“规范响应”，返回给调用方时修正为 true
-            return patch_from_cache_flag(str(cached_result), True)
-        
-        # 缓存未命中：需要访问上游，先做全局限流
-        metrics.record_cache_miss()
-        remaining = _check_rate_limit(tokens=1)
-        if remaining is not None:
-            latency = time.time() - start_time
-            metrics.record_request(success=False, latency=latency, endpoint="search")
-            payload = build_error_item(
-                word=normalized_word,
-                dict_type=dict_type,
-                error="请求频率超限",
-                error_type="rate_limit",
-                details=f"请求过于频繁，请稍后重试。当前剩余配额: {remaining}",
-                from_cache=False,
+def _build_input_validation_response(
+    *,
+    words_count: int,
+    dict_type: DictType,
+    details: str,
+) -> str:
+    """构造请求级输入校验失败响应。"""
+    payload = build_grouped_payload(
+        dict_type=dict_type,
+        total_count=words_count,
+        successful_results=[],
+        failed_results=[
+            build_failed_result_item(
+                index=-1,
+                word="",
+                source_word="",
                 deduped=False,
-                source_word=normalized_word,
-                include_dict_type=True,
+                error="输入验证失败",
+                error_type="validation",
+                details=details,
             )
-            return dumps_json(payload)
-        
-        async with NaverClient() as client:
-            data = await _upstream_search_with_retry(
-                client=client,
-                word=normalized_word,
-                dict_type=dict_type,
-            )
-            results = parse_search_results(data)
-            
-            logger.info(f"搜索成功: 找到 {len(results)} 条结果")
-            
-            # 创建 JSON 响应
-            result_json = _build_success_json(
-                word=normalized_word,
-                dict_type=dict_type,
-                results=results,
-                from_cache=False,
-            )
-            
-            # 缓存结果
-            cache.set(
-                normalized_word,
-                dict_type,
-                result_json,
-                ttl=_cache_ttl_for_results(results),
-            )
-            
-            # 记录指标
-            latency = time.time() - start_time
-            metrics.record_request(success=True, latency=latency, endpoint="search")
-            
-            return result_json
-    
-    except ValidationError as e:
-        latency = time.time() - start_time
-        metrics.record_request(success=False, latency=latency, endpoint="search")
+        ],
+        latency=0.0,
+    )
+    return dumps_json(payload)
+
+
+def _build_failed_template(
+    *,
+    word: str,
+    error: str,
+    error_type: str,
+    details: str,
+) -> dict[str, Any]:
+    """构造统一失败模板。"""
+    return {
+        "success": False,
+        "word": word,
+        "error": error,
+        "error_type": error_type,
+        "details": details,
+    }
+
+
+def _build_http_status_failed_template(word: str, exc: httpx.HTTPStatusError) -> dict[str, Any]:
+    """构造 HTTP 状态码错误模板。"""
+    status_code = exc.response.status_code
+    error_type = _http_error_type_for_upstream_status(status_code)
+    metrics.record_error(error_type)
+    error_messages = {
+        400: "请求参数错误",
+        404: "未找到请求的资源",
+        429: "上游请求过于频繁，请稍后重试",
+        500: "服务器内部错误",
+        502: "网关错误",
+        503: "服务暂时不可用",
+    }
+    if error_type == "upstream_rate_limit":
+        message = error_messages.get(429, "上游请求频率限制")
+    elif error_type == "upstream_server_error":
+        message = error_messages.get(status_code, f"上游服务错误（HTTP {status_code}）")
+    else:
+        message = error_messages.get(status_code, f"HTTP 错误 {status_code}")
+    return _build_failed_template(
+        word=word,
+        error=message,
+        error_type=error_type,
+        details=f"上游返回 HTTP {status_code}: {exc}",
+    )
+
+
+def _failed_template_from_exception(word: str, exc: Exception) -> dict[str, Any]:
+    """将异常映射为统一失败模板。"""
+    if isinstance(exc, ValidationError):
         metrics.record_error("validation")
-        logger.warning(f"输入验证失败: {e}")
-        w = normalized_word if normalized_word is not None else (word or "")
-        payload = build_error_item(
-            word=w,
-            dict_type=dict_type,
+        return _build_failed_template(
+            word=word,
             error="输入验证失败",
             error_type="validation",
-            details=str(e),
-            from_cache=False,
-            deduped=False,
-            source_word=w,
-            include_dict_type=True,
+            details=str(exc),
         )
-        return dumps_json(payload)
-    
-    except httpx.TimeoutException as e:
-        latency = time.time() - start_time
-        metrics.record_request(success=False, latency=latency, endpoint="search")
+    if isinstance(exc, httpx.TimeoutException):
         metrics.record_error("timeout")
-        logger.error(f"请求超时: {e}")
-        w = normalized_word if normalized_word is not None else (word or "")
-        payload = build_error_item(
-            word=w,
-            dict_type=dict_type,
+        return _build_failed_template(
+            word=word,
             error="请求超时",
             error_type="timeout",
             details=f"API 请求超时，请稍后重试（超时时间: {config.HTTP_TIMEOUT}s）",
-            from_cache=False,
-            deduped=False,
-            source_word=w,
-            include_dict_type=True,
         )
-        return dumps_json(payload)
-    
-    except httpx.HTTPStatusError as e:
-        status_code = e.response.status_code
-        latency = time.time() - start_time
-        metrics.record_request(success=False, latency=latency, endpoint="search")
-        error_type = _http_error_type_for_upstream_status(status_code)
-        metrics.record_error(error_type)
-        logger.error(f"HTTP 错误 {status_code}: {e}")
-        
-        error_messages = {
-            400: "请求参数错误",
-            404: "未找到请求的资源",
-            429: "上游请求过于频繁，请稍后重试",
-            500: "服务器内部错误",
-            502: "网关错误",
-            503: "服务暂时不可用",
-        }
-        
-        w = normalized_word if normalized_word is not None else (word or "")
-        if error_type == "upstream_rate_limit":
-            error_msg = error_messages.get(429, "上游请求频率限制")
-        elif error_type == "upstream_server_error":
-            error_msg = error_messages.get(status_code, f"上游服务错误（HTTP {status_code}）")
-        else:
-            error_msg = error_messages.get(status_code, f"HTTP 错误 {status_code}")
-        payload = build_error_item(
-            word=w,
-            dict_type=dict_type,
-            error=error_msg,
-            error_type=error_type,
-            details=f"上游返回 HTTP {status_code}: {e}",
-            from_cache=False,
-            deduped=False,
-            source_word=w,
-            include_dict_type=True,
-        )
-        return dumps_json(payload)
-    
-    except httpx.RequestError as e:
-        latency = time.time() - start_time
-        metrics.record_request(success=False, latency=latency, endpoint="search")
+    if isinstance(exc, httpx.HTTPStatusError):
+        return _build_http_status_failed_template(word, exc)
+    if isinstance(exc, httpx.RequestError):
         metrics.record_error("network_error")
-        logger.error(f"网络请求错误: {e}", exc_info=True)
-        w = normalized_word if normalized_word is not None else (word or "")
-        payload = build_error_item(
-            word=w,
-            dict_type=dict_type,
+        return _build_failed_template(
+            word=word,
             error="网络连接错误",
             error_type="network_error",
             details="无法连接到 Naver API，请检查网络连接",
-            from_cache=False,
-            deduped=False,
-            source_word=w,
-            include_dict_type=True,
         )
-        return dumps_json(payload)
-    
-    except (KeyError, ValueError, TypeError) as e:
-        latency = time.time() - start_time
-        metrics.record_request(success=False, latency=latency, endpoint="search")
+    if isinstance(exc, (KeyError, ValueError, TypeError)):
         metrics.record_error("parse_error")
-        logger.error(f"解析错误: {e}", exc_info=True)
-        w = normalized_word if normalized_word is not None else (word or "")
-        payload = build_error_item(
-            word=w,
-            dict_type=dict_type,
+        return _build_failed_template(
+            word=word,
             error="响应解析失败",
             error_type="parse_error",
             details="API 返回的数据格式异常，可能是 API 接口发生了变化",
-            from_cache=False,
-            deduped=False,
-            source_word=w,
-            include_dict_type=True,
         )
-        return dumps_json(payload)
-    
-    except Exception as e:
-        latency = time.time() - start_time
-        metrics.record_request(success=False, latency=latency, endpoint="search")
-        metrics.record_error("unknown")
-        logger.error(f"未知错误: {e}", exc_info=True)
-        w = normalized_word if normalized_word is not None else (word or "")
-        payload = build_error_item(
-            word=w,
+    metrics.record_error("unknown")
+    return _build_failed_template(
+        word=word,
+        error="未知错误",
+        error_type="unknown",
+        details=str(exc),
+    )
+
+
+def _fill_rate_limited_items(
+    *,
+    resolved: list[Optional[dict[str, Any]]],
+    miss_indices_by_word: dict[str, list[int]],
+    denied_words: dict[str, int],
+) -> None:
+    """填充被限流的词项。"""
+    for word, remaining in denied_words.items():
+        indices = miss_indices_by_word[word]
+        source_idx = indices[0]
+        for idx in indices:
+            resolved[idx] = build_failed_result_item(
+                index=idx,
+                word=word,
+                source_word=word,
+                deduped=idx != source_idx,
+                error="请求频率超限",
+                error_type="rate_limit",
+                details=f"请求过于频繁，请稍后重试。当前剩余配额: {remaining}",
+            )
+
+
+async def _fetch_one_word(
+    *,
+    client: NaverClient,
+    word: str,
+    dict_type: DictType,
+    semaphore: asyncio.Semaphore,
+) -> dict[str, Any]:
+    """拉取并缓存单词查询结果，返回成功/失败模板。"""
+    try:
+        data = await _upstream_search_with_retry(
+            client=client,
+            word=word,
             dict_type=dict_type,
-            error="未知错误",
-            error_type="unknown",
-            details=str(e),
-            from_cache=False,
-            deduped=False,
-            source_word=w,
-            include_dict_type=True,
+            semaphore=semaphore,
         )
-        return dumps_json(payload)
+        parsed = parse_search_results(data)
+        cache_json = _build_success_json(word=word, dict_type=dict_type, results=parsed)
+        cache.set(word, dict_type, cache_json, ttl=_cache_ttl_for_results(parsed))
+        return {"success": True, "word": word, "results": parsed}
+    except Exception as exc:
+        return _failed_template_from_exception(word, exc)
 
 
-@mcp.tool()
-async def search_word(word: str, dict_type: DictType = "ko-zh") -> str:
-    """
-    在 Naver 辞典中搜索单词。
-    
-    Args:
-        word: 要搜索的单词
-        dict_type: 字典类型 - "ko-zh" 韩中辞典，"ko-en" 韩英辞典
-        
-    Returns:
-        JSON 格式字符串，包含搜索结果:
-        {
-            "success": true,
-            "word": "搜索的单词",
-            "dict_type": "ko-zh 或 ko-en",
-            "count": 结果数量,
-            "results": [
-                {
-                    "word": "单词/短语",
-                    "pronunciation": "发音",
-                    "meanings": ["释义1", "释义2", ...],
-                    "examples": ["例句1", "例句2", ...]
-                },
-                ...
-            ]
-        }
-    """
-    return await _search_word_impl(word, dict_type)
+def _build_grouped_results(
+    resolved: list[Optional[dict[str, Any]]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """将逐项结果按成功/失败分组。"""
+    successful: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    for item in resolved:
+        if item is None:
+            continue
+        if item.get("success") is True:
+            successful.append(item)
+        else:
+            failed.append(item)
+    return successful, failed
 
 
-async def _batch_search_words_impl(
-    words: list[str], 
-    dict_type: DictType = "ko-zh",
-    return_cached_json: bool = False,
-) -> str:
-    """批量查询核心实现（便于单元测试与复用）。"""
-    start_time = time.time()
-    include_dict_type = config.BATCH_ITEM_INCLUDE_DICT_TYPE
-
-    # 输入验证
+def _validate_words_or_return_error(words: list[str], dict_type: DictType) -> Optional[str]:
+    """校验请求级输入，失败时直接返回响应。"""
     if not words:
         metrics.record_error("validation")
-        return dumps_json(
-            {
-                "success": False,
-                "error": "单词列表不能为空",
-                "error_type": "validation",
-                "details": "words 不能为空",
-                "dict_type": dict_type,
-            }
+        metrics.record_request(success=False, latency=0.0, endpoint="search_words")
+        return _build_input_validation_response(
+            words_count=0,
+            dict_type=dict_type,
+            details="words 不能为空",
         )
-    
-    if len(words) > 10:
+    if len(words) > MAX_WORDS_PER_REQUEST:
         metrics.record_error("validation")
-        return dumps_json(
-            {
-                "success": False,
-                "error": "批量查询最多支持 10 个单词",
-                "error_type": "validation",
-                "details": f"当前请求 {len(words)} 个单词，超过限制",
-                "dict_type": dict_type,
-            }
+        metrics.record_request(success=False, latency=0.0, endpoint="search_words")
+        return _build_input_validation_response(
+            words_count=len(words),
+            dict_type=dict_type,
+            details=f"批量查询最多支持 {MAX_WORDS_PER_REQUEST} 个单词，当前 {len(words)} 个",
         )
-    
-    logger.info(f"收到批量查询请求: {len(words)} 个单词, dict_type={dict_type}")
+    return None
 
-    # 预分配结果（保持与输入顺序一致）
-    results: list[dict[str, Any]] = [{} for _ in range(len(words))]
 
-    # 需要访问上游的词（按词去重，减少上游请求与配额消耗）
+def _build_invalid_word_item(index: int, raw_word: str, exc: ValidationError) -> dict[str, Any]:
+    """构建单个词项校验失败结果。"""
+    metrics.record_error("validation")
+    raw = raw_word or ""
+    return build_failed_result_item(
+        index=index,
+        word=raw,
+        source_word=raw.strip(),
+        deduped=False,
+        error="输入验证失败",
+        error_type="validation",
+        details=str(exc),
+    )
+
+
+def _build_cached_item_or_parse_error(
+    *,
+    index: int,
+    word: str,
+    cached_value: Any,
+) -> dict[str, Any]:
+    """从缓存值构建成功项，缓存格式异常时返回 parse_error。"""
+    try:
+        cached_data = json.loads(str(cached_value))
+        cached_results = cached_data.get("results", [])
+        return build_success_result_item(
+            index=index,
+            word=word,
+            source_word=word,
+            from_cache=True,
+            deduped=False,
+            results=cached_results,
+        )
+    except (TypeError, ValueError, KeyError) as exc:
+        metrics.record_error("parse_error")
+        return build_failed_result_item(
+            index=index,
+            word=word,
+            source_word=word,
+            deduped=False,
+            error="响应解析失败",
+            error_type="parse_error",
+            details=f"缓存数据格式异常: {exc}",
+        )
+
+
+def _collect_initial_items(
+    words: list[str],
+    dict_type: DictType,
+) -> tuple[list[Optional[dict[str, Any]]], dict[str, list[int]]]:
+    """处理输入校验、缓存命中与 miss 收集。"""
+    resolved: list[Optional[dict[str, Any]]] = [None for _ in words]
     miss_indices_by_word: dict[str, list[int]] = {}
-
-    # 1) 规范化 + 缓存优先（不访问上游不消耗配额）
     for idx, raw_word in enumerate(words):
         try:
             normalized_word = _normalize_word(raw_word)
-        except ValidationError as e:
-            metrics.record_error("validation")
-            w = raw_word or ""
-            results[idx] = build_error_item(
-                word=w,
-                dict_type=dict_type,
-                error="输入验证失败",
-                error_type="validation",
-                details=str(e),
-                from_cache=False,
-                deduped=False,
-                source_word=w.strip(),
-                include_dict_type=include_dict_type,
-            )
+        except ValidationError as exc:
+            resolved[idx] = _build_invalid_word_item(idx, raw_word, exc)
             continue
 
         cached = cache.get(normalized_word, dict_type)
-        if cached:
+        if cached is not None:
             metrics.record_cache_hit()
-            cached_str = str(cached)
-            if return_cached_json:
-                # 直接返回缓存 JSON，避免反序列化与拼装（调用方可自行解析）
-                results[idx] = build_cached_json_item(
-                    word=normalized_word,
-                    dict_type=dict_type,
-                    cached_json=cached_str,
-                    deduped=False,
-                    source_word=normalized_word,
-                    include_dict_type=include_dict_type,
-                )
-            else:
-                cached_data = json.loads(cached_str)
-                cached_results = cached_data.get("results", [])
-                results[idx] = build_success_item(
-                    word=normalized_word,
-                    dict_type=dict_type,
-                    results=cached_results,
-                    from_cache=True,
-                    deduped=False,
-                    source_word=normalized_word,
-                    include_dict_type=include_dict_type,
-                )
-                # 兼容：如果缓存里包含 count 且与 results 不一致，以 count 为准
-                if "count" in cached_data:
-                    results[idx]["count"] = cached_data.get("count", len(cached_results))
+            resolved[idx] = _build_cached_item_or_parse_error(
+                index=idx,
+                word=normalized_word,
+                cached_value=cached,
+            )
             continue
 
         metrics.record_cache_miss()
         miss_indices_by_word.setdefault(normalized_word, []).append(idx)
+    return resolved, miss_indices_by_word
 
-    # 2) 对缓存 miss 的“去重词”做限流扣配额（只为上游请求消耗 token）
-    miss_words = list(miss_indices_by_word.keys())
-    if miss_words:
-        remaining = _check_rate_limit(tokens=len(miss_words))
-        if remaining is not None:
-            # 限流时不访问上游：对 miss 的词填充 rate_limit 错误，其余（缓存命中/校验失败）保留
-            for w in miss_words:
-                indices = miss_indices_by_word[w]
-                source_idx = indices[0]
-                for idx in indices:
-                    results[idx] = build_error_item(
-                        word=w,
-                        dict_type=dict_type,
-                        error="请求频率超限",
-                        error_type="rate_limit",
-                        details=f"请求过于频繁，请稍后重试。当前剩余配额: {remaining}",
-                        from_cache=False,
-                        deduped=idx != source_idx,
-                        source_word=w,
-                        include_dict_type=include_dict_type,
-                    )
-        else:
-            async with NaverClient() as client:
-                semaphore = asyncio.Semaphore(config.BATCH_CONCURRENCY)
 
-                async def fetch_one(w: str) -> dict[str, Any]:
-                    """获取并解析单个词（仅处理缓存 miss 的词）。"""
-                    try:
-                        # 批量内部并发上限：只限制访问上游的瞬时并发，避免瞬时并发把上游打爆
-                        data = await _upstream_search_with_retry(
-                            client=client,
-                            word=w,
-                            dict_type=dict_type,
-                            semaphore=semaphore,
-                        )
-                        parsed = parse_search_results(data)
+def _allocate_rate_limit_for_words(miss_words: list[str]) -> tuple[list[str], dict[str, int]]:
+    """按词序分配上游配额，允许部分放行。"""
+    allowed_words: list[str] = []
+    denied_words: dict[str, int] = {}
+    for word in miss_words:
+        remaining = _check_rate_limit(tokens=1)
+        if remaining is None:
+            allowed_words.append(word)
+            continue
+        denied_words[word] = remaining
+    return allowed_words, denied_words
 
-                        # 缓存结果（与 search_word 一致）
-                        cache_json = _build_success_json(
-                            word=w,
-                            dict_type=dict_type,
-                            results=parsed,
-                            from_cache=False,
-                        )
-                        cache.set(w, dict_type, cache_json, ttl=_cache_ttl_for_results(parsed))
 
-                        return build_success_item(
-                            word=w,
-                            dict_type=dict_type,
-                            results=parsed,
-                            from_cache=False,
-                            deduped=False,
-                            source_word=w,
-                            include_dict_type=include_dict_type,
-                        )
-                    except ValidationError as e:
-                        metrics.record_error("validation")
-                        return build_error_item(
-                            word=w,
-                            dict_type=dict_type,
-                            error="输入验证失败",
-                            error_type="validation",
-                            details=str(e),
-                            from_cache=False,
-                            deduped=False,
-                            source_word=w,
-                            include_dict_type=include_dict_type,
-                        )
-                    except httpx.TimeoutException:
-                        metrics.record_error("timeout")
-                        return build_error_item(
-                            word=w,
-                            dict_type=dict_type,
-                            error="请求超时",
-                            error_type="timeout",
-                            details=f"API 请求超时，请稍后重试（超时时间: {config.HTTP_TIMEOUT}s）",
-                            from_cache=False,
-                            deduped=False,
-                            source_word=w,
-                            include_dict_type=include_dict_type,
-                        )
-                    except httpx.HTTPStatusError as e:
-                        status_code = e.response.status_code
-                        error_type = _http_error_type_for_upstream_status(status_code)
-                        metrics.record_error(error_type)
-                        error_messages = {
-                            400: "请求参数错误",
-                            404: "未找到请求的资源",
-                            429: "上游请求过于频繁，请稍后重试",
-                            500: "服务器内部错误",
-                            502: "网关错误",
-                            503: "服务暂时不可用",
-                        }
-                        if error_type == "upstream_rate_limit":
-                            error_msg = error_messages.get(429, "上游请求频率限制")
-                        elif error_type == "upstream_server_error":
-                            error_msg = error_messages.get(status_code, f"上游服务错误（HTTP {status_code}）")
-                        else:
-                            error_msg = error_messages.get(status_code, f"HTTP 错误 {status_code}")
-                        return build_error_item(
-                            word=w,
-                            dict_type=dict_type,
-                            error=error_msg,
-                            error_type=error_type,
-                            details=f"上游返回 HTTP {status_code}: {e}",
-                            from_cache=False,
-                            deduped=False,
-                            source_word=w,
-                            include_dict_type=include_dict_type,
-                        )
-                    except httpx.RequestError:
-                        metrics.record_error("network_error")
-                        return build_error_item(
-                            word=w,
-                            dict_type=dict_type,
-                            error="网络连接错误",
-                            error_type="network_error",
-                            details="无法连接到 Naver API，请检查网络连接",
-                            from_cache=False,
-                            deduped=False,
-                            source_word=w,
-                            include_dict_type=include_dict_type,
-                        )
-                    except (KeyError, ValueError, TypeError):
-                        metrics.record_error("parse_error")
-                        return build_error_item(
-                            word=w,
-                            dict_type=dict_type,
-                            error="响应解析失败",
-                            error_type="parse_error",
-                            details="API 返回的数据格式异常，可能是 API 接口发生了变化",
-                            from_cache=False,
-                            deduped=False,
-                            source_word=w,
-                            include_dict_type=include_dict_type,
-                        )
-                    except Exception as e:
-                        metrics.record_error("unknown")
-                        return build_error_item(
-                            word=w,
-                            dict_type=dict_type,
-                            error="未知错误",
-                            error_type="unknown",
-                            details=str(e),
-                            from_cache=False,
-                            deduped=False,
-                            source_word=w,
-                            include_dict_type=include_dict_type,
-                        )
+async def _fetch_templates_for_words(
+    words: list[str],
+    dict_type: DictType,
+) -> dict[str, dict[str, Any]]:
+    """批量拉取词项模板。"""
+    if not words:
+        return {}
+    semaphore = asyncio.Semaphore(config.BATCH_CONCURRENCY)
+    async with NaverClient() as client:
+        fetched = await asyncio.gather(
+            *(
+                _fetch_one_word(
+                    client=client,
+                    word=word,
+                    dict_type=dict_type,
+                    semaphore=semaphore,
+                )
+                for word in words
+            )
+        )
+    return {item["word"]: item for item in fetched}
 
-                fetched = await asyncio.gather(*(fetch_one(w) for w in miss_words))
-                fetched_by_word = {item["word"]: item for item in fetched}
 
-                for w in miss_words:
-                    item = fetched_by_word[w]
-                    indices = miss_indices_by_word[w]
-                    source_idx = indices[0]
-                    for idx in indices:
-                        # 去重回填：同一个 miss 词只访问一次上游，但要对重复项标记 deduped/source_word
-                        per_item = dict(item)
-                        per_item["deduped"] = idx != source_idx
-                        per_item["source_word"] = w
-                        results[idx] = per_item
+def _fill_fetched_items(
+    *,
+    resolved: list[Optional[dict[str, Any]]],
+    miss_indices_by_word: dict[str, list[int]],
+    allowed_words: list[str],
+    fetched_by_word: dict[str, dict[str, Any]],
+) -> None:
+    """将上游查询结果按输入索引回填。"""
+    for word in allowed_words:
+        template = fetched_by_word[word]
+        indices = miss_indices_by_word[word]
+        source_idx = indices[0]
+        for idx in indices:
+            deduped = idx != source_idx
+            if template.get("success") is True:
+                resolved[idx] = build_success_result_item(
+                    index=idx,
+                    word=word,
+                    source_word=word,
+                    from_cache=False,
+                    deduped=deduped,
+                    results=template.get("results", []),
+                )
+                continue
+            resolved[idx] = build_failed_result_item(
+                index=idx,
+                word=word,
+                source_word=word,
+                deduped=deduped,
+                error=str(template.get("error", "未知错误")),
+                error_type=str(template.get("error_type", "unknown")),
+                details=str(template.get("details", "")),
+            )
 
-    # 记录指标
-    latency = time.time() - start_time
-    success_count = sum(1 for r in results if r.get("success") is True)
-    metrics.record_request(
-        success=success_count == len(words),
-        latency=latency, 
-        endpoint="batch_search"
+
+async def _search_words_impl(words: list[str], dict_type: DictType = "ko-zh") -> str:
+    """统一单查/批查实现（MCP v2）。"""
+    start_time = time.time()
+    validation_response = _validate_words_or_return_error(words, dict_type)
+    if validation_response is not None:
+        return validation_response
+
+    logger.info(f"收到统一查询请求: {len(words)} 个单词, dict_type={dict_type}")
+    resolved, miss_indices_by_word = _collect_initial_items(words, dict_type)
+    allowed_words, denied_words = _allocate_rate_limit_for_words(list(miss_indices_by_word.keys()))
+
+    _fill_rate_limited_items(
+        resolved=resolved,
+        miss_indices_by_word=miss_indices_by_word,
+        denied_words=denied_words,
     )
-    
-    logger.info(f"批量查询完成: {success_count}/{len(words)} 成功, 耗时 {latency:.3f}s")
-    
-    return dumps_json(build_batch_payload(dict_type=dict_type, results=results, latency=latency))
+
+    fetched_by_word = await _fetch_templates_for_words(allowed_words, dict_type)
+    _fill_fetched_items(
+        resolved=resolved,
+        miss_indices_by_word=miss_indices_by_word,
+        allowed_words=allowed_words,
+        fetched_by_word=fetched_by_word,
+    )
+
+    successful_results, failed_results = _build_grouped_results(resolved)
+    latency = time.time() - start_time
+    metrics.record_request(
+        success=len(failed_results) == 0,
+        latency=latency,
+        endpoint="search_words",
+    )
+    payload = build_grouped_payload(
+        dict_type=dict_type,
+        total_count=len(words),
+        successful_results=successful_results,
+        failed_results=failed_results,
+        latency=latency,
+    )
+    logger.info(
+        "统一查询完成: %s/%s 成功, 耗时 %.3fs",
+        len(successful_results),
+        len(words),
+        latency,
+    )
+    return dumps_json(payload)
 
 
 @mcp.tool()
-async def batch_search_words(
-    words: list[str],
-    dict_type: DictType = "ko-zh",
-    return_cached_json: bool = False,
-) -> str:
-    """
-    批量并发搜索多个单词。
-
-    Args:
-        words: 要搜索的单词列表（最多 10 个）
-        dict_type: 字典类型 - "ko-zh" 韩中辞典，"ko-en" 韩英辞典
-
-    Returns:
-        JSON 格式的批量搜索结果:
-        {
-            "success": true,
-            "partial_success": false,
-            "count": 3,
-            "success_count": 3,
-            "fail_count": 0,
-            "dict_type": "ko-zh",
-            "results": [
-                {
-                    "word": "안녕하세요",
-                    "success": true,
-                    "count": 1,
-                    "results": [...],
-                    "from_cache": true
-                },
-                ...
-            ],
-            "latency": 0.234
-        }
-    """
-    return await _batch_search_words_impl(words, dict_type, return_cached_json)
+async def search_words(words: list[str], dict_type: DictType = "ko-zh") -> str:
+    """统一查询工具：单查与批查共用 `words` 入参（1..30）。"""
+    return await _search_words_impl(words, dict_type)
 
 
 async def cleanup() -> None:

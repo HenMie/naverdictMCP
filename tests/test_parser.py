@@ -45,6 +45,7 @@ class TestParseSearchResults:
         
         assert len(results) == 1
         assert results[0]["word"] == "안녕하세요"
+        assert results[0]["source_type"] == "WORD"
         assert results[0]["pronunciation"] == "[안녕하세요]"
         assert len(results[0]["meanings"]) == 1
         assert results[0]["meanings"][0] == "[感叹词] 你好"
@@ -112,6 +113,63 @@ class TestParseSearchResults:
         assert results[0]["word"] == "단어1"
         assert results[1]["word"] == "단어2"
 
+    def test_parse_word_open_merge_and_related_words(self):
+        """同词在 WORD/OPEN 均出现时应合并，并保留来源与相关词。"""
+        data = {
+            "searchResultMap": {
+                "searchResultListMap": {
+                    "WORD": {
+                        "items": [
+                            {
+                                "expEntry": "테스트",
+                                "searchPhoneticSymbolList": [{"symbolValue": "[테스트]"}],
+                                "meansCollector": [
+                                    {
+                                        "partOfSpeech2": "名词",
+                                        "means": [
+                                            {
+                                                "value": '<span class="related_word" lang="ko">시험</span> 测试',
+                                                "exampleOri": "테스트 예문",
+                                                "exampleTrans": "测试例句",
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    "OPEN": {
+                        "items": [
+                            {
+                                "expEntry": "테스트",
+                                "meansCollector": [
+                                    {
+                                        "partOfSpeech2": "名词",
+                                        "means": [
+                                            {
+                                                "value": "补充释义",
+                                                "exampleOri": "테스트 예문",
+                                                "exampleTrans": "测试例句",
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                }
+            }
+        }
+
+        results = parse_search_results(data)
+        assert len(results) == 1
+        assert results[0]["word"] == "테스트"
+        assert "WORD" in results[0]["source_types"]
+        assert "OPEN" in results[0]["source_types"]
+        assert "시험" in results[0]["related_words"]
+        # 例句应去重
+        assert len(results[0]["examples"]) == 1
+
 
 class TestFormatResults:
     """Tests for result formatting."""
@@ -156,23 +214,24 @@ class TestFormatResults:
         assert "意思3" in output
     
     def test_format_limits_examples(self):
-        """Test that formatting limits examples to 3."""
+        """Test that formatting limits examples to 5."""
         results = [
             {
                 "word": "테스트",
                 "pronunciation": "",
                 "meanings": ["测试"],
-                "examples": ["例1", "例2", "例3", "例4", "例5"]
+                "examples": ["例1", "例2", "例3", "例4", "例5", "例6"]
             }
         ]
         output = format_results(results)
         
-        # Should only show first 3 examples
+        # Should only show first 5 examples
         assert "例1" in output
         assert "例2" in output
         assert "例3" in output
-        assert "例4" not in output
-        assert "例5" not in output
+        assert "例4" in output
+        assert "例5" in output
+        assert "例6" not in output
     
     def test_format_missing_optional_fields(self):
         """Test formatting with missing optional fields."""
