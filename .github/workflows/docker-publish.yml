@@ -13,8 +13,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # 同一分支/同一 tag 串行发布（排队执行），避免并发 push 导致镜像标签互相覆盖
-  group: docker-publish-${{ github.ref }}
+  # 同一提交的分支推送与 tag 推送统一串行，避免并发 push 共享 sha 标签时互相覆盖
+  group: docker-publish-${{ github.workflow }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -55,8 +55,8 @@ jobs:
           tags: |
             # 默认分支（main）推送时发布 latest
             type=raw,value=latest,enable={{is_default_branch}}
-            # 同步发布短 SHA 标签，便于定位到具体提交
-            type=sha,format=short,prefix=sha-
+            # 仅分支发布时同步发布短 SHA 标签，避免 tag 事件与分支事件并发推送同名 sha 标签
+            type=sha,format=short,prefix=sha-,enable=${{ github.ref_type == 'branch' }}
             # tag 推送时，直接使用 tag 名作为镜像 tag（例如 v0.1.0）
             type=ref,event=tag
 
@@ -82,5 +82,4 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           generate_release_notes: true
-
 
