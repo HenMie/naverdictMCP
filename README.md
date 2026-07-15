@@ -1,298 +1,107 @@
-# Naver Dictionary MCP Server
+# Naver Dictionary MCP
 
-一个基于 FastMCP 2.0 的 Streamable HTTP MCP 服务器,用于查询 Naver 辞典(韩中、韩英)。
+部署在 Vercel 上的无状态 Naver 韩中/韩英辞典 MCP 服务。服务只暴露一个
+`search_words` 工具，并使用 Bearer Token 保护公网入口。
 
-[![Docker Hub](https://img.shields.io/docker/v/chouann/naverdictmcp?label=Docker%20Hub)](https://hub.docker.com/r/chouann/naverdictmcp)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FHenMie%2FnaverdictMCP&env=MCP_API_KEY&envDescription=Required%20Bearer%20token%20with%20at%20least%2032%20bytes&project-name=naver-dictionary-mcp&repository-name=naver-dictionary-mcp)
 
-## ✨ 功能特性
+## 一键部署
 
-- 🔍 **多语言辞典**: 韩中/韩英辞典查询，返回释义、发音、例句
-- ⚡ **高性能**: 异步架构 + 连接池 + 智能缓存（TTL + LRU）
-- 📦 **统一查询**: 仅暴露 `search_words` 工具，单查/批查共用（最多 30 词）
-- 🚦 **限流保护**: 令牌桶算法，全局共享上游限流（默认 60 请求/分钟）
-- 🛡️ **健壮性**: 输入验证 + 分类错误处理 + 自动重试
-- 🐳 **Docker 就绪**: 多架构镜像（amd64/arm64），~110MB
-- ✅ **高质量**: 90% 测试覆盖率 + MyPy 严格类型检查 + Ruff 代码规范
+1. 点击上方 **Deploy with Vercel**。
+2. 在 Vercel 页面填写 `MCP_API_KEY`。可使用 `openssl rand -hex 32` 生成。
+3. 部署完成后，MCP 地址为 `https://<你的域名>/mcp`。
 
-## 🚀 快速开始
+部署不需要 Redis、数据库或其他 Marketplace 服务。`GET /health` 可用于健康检查，
+该路由不需要认证。
 
-### Docker 部署（推荐）
+## MCP 客户端配置
 
-```bash
-# 拉取并运行最新镜像
-docker pull chouann/naverdictmcp:latest
-docker run -d -p 8000:8000 --name naverdictmcp chouann/naverdictmcp:latest
-
-# 或使用 Docker Compose
-docker-compose up -d
-```
-
-### 本地开发
-
-```bash
-# 克隆并安装
-git clone <repository-url>
-cd naverdictMCP
-uv sync
-
-# 启动服务器
-python src/server.py
-```
-
-服务器将在 `http://localhost:8000` 启动。
-
-## 📖 使用示例
-
-### 统一查询（单词）
-
-```bash
-curl -X POST http://localhost:8000/mcp \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/call",
-    "params": {
-      "name": "search_words",
-      "arguments": {
-        "words": ["안녕하세요"],
-        "dict_type": "ko-zh"
-      }
-    }
-  }'
-```
-
-### 统一查询（批量）
-
-```bash
-curl -X POST http://localhost:8000/mcp \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 2,
-    "method": "tools/call",
-    "params": {
-      "name": "search_words",
-      "arguments": {
-        "words": ["안녕하세요", "감사합니다", "학교"],
-        "dict_type": "ko-zh"
-      }
-    }
-  }'
-```
-
-## ⚙️ 配置
-
-### 环境变量
-
-创建 `.env` 文件自定义配置（开发模式自动加载，生产环境建议通过容器环境变量注入）：
-
-```env
-# 服务器配置
-SERVER_HOST=0.0.0.0
-SERVER_PORT=8000
-LOG_LEVEL=INFO
-
-# 性能配置
-HTTP_TIMEOUT=30.0
-REQUESTS_PER_MINUTE=60
-CACHE_TTL=3600
-CACHE_MAX_SIZE=1000
-```
-
-<details>
-<summary>查看完整配置选项</summary>
-
-| 环境变量 | 说明 | 默认值 |
-|---------|------|--------|
-| `APP_ENV` | 运行模式：development/testing/production | `development` |
-| `SERVER_HOST` | 服务器监听地址 | `0.0.0.0` |
-| `SERVER_PORT` | 服务器端口 | `8000` |
-| `HTTP_TIMEOUT` | HTTP 请求超时时间(秒) | `30.0` |
-| `LOG_LEVEL` | 日志级别（DEBUG/INFO/WARNING/ERROR/CRITICAL） | `INFO` |
-| `REQUESTS_PER_MINUTE` | 上游请求限流（每分钟，全局共享） | `60` |
-| `CACHE_TTL` | 缓存 TTL（秒） | `3600` |
-| `CACHE_NEGATIVE_TTL` | 负缓存 TTL（秒） | `60` |
-| `CACHE_MAX_SIZE` | 缓存最大条目数 | `1000` |
-| `UPSTREAM_RETRY_MAX_ATTEMPTS` | 上游重试最大次数 | `3` |
-| `BATCH_CONCURRENCY` | 批量查询并发上限 | `5` |
-
-</details>
-
-## 🐳 Docker 部署
-
-本项目 Docker 镜像采用**多阶段构建**，并包含运行时最小化与安全配置（Docker 优化）。
-
-### 方式一：Docker Hub 镜像（推荐）
-
-```bash
-# 拉取最新版本
-docker pull chouann/naverdictmcp:latest
-docker run -d -p 8000:8000 --name naverdictmcp chouann/naverdictmcp:latest
-
-# 或使用指定版本（生产环境推荐）
-docker pull chouann/naverdictmcp:v1.0.0
-docker run -d -p 8000:8000 --name naverdictmcp chouann/naverdictmcp:v1.0.0
-```
-
-**镜像仓库：** [Docker Hub - chouann/naverdictmcp](https://hub.docker.com/r/chouann/naverdictmcp)
-
-### 方式二：Docker Compose
-
-```bash
-# 启动服务
-docker-compose up -d
-
-# 更新镜像并重启
-docker-compose pull && docker-compose up -d
-
-# 停止服务
-docker-compose down
-```
-
-创建 `.env` 文件自定义配置：
-
-```env
-SERVER_PORT=8000
-LOG_LEVEL=INFO
-HTTP_TIMEOUT=30.0
-REQUESTS_PER_MINUTE=60
-```
-
-### 方式三：本地构建
-
-```bash
-# 构建并运行
-docker build -t naver-dict-mcp .
-docker run -d -p 8000:8000 --name naver-dict-mcp naver-dict-mcp:latest
-
-# 或使用 Makefile
-make docker-build
-make docker-run
-```
-
-## 🔧 API 参考
-
-### search_words
-
-统一查询单词（单查和批查共用）。
-
-**参数:**
-
-- `words` (array[string], 必需): 要查询的单词列表（1..30，每项最长 100 字符）
-- `dict_type` (string, 可选): 辞典类型 `"ko-zh"`（默认）或 `"ko-en"`
-
-**返回:** JSON 字符串，包含释义、发音、例句等
-
-**示例:**
+支持自定义 HTTP Header 的 MCP 客户端可使用以下配置：
 
 ```json
 {
-  "name": "search_words",
-  "arguments": {
-    "words": ["안녕하세요"],
-    "dict_type": "ko-zh"
+  "mcpServers": {
+    "naver-dictionary": {
+      "url": "https://<你的域名>/mcp",
+      "headers": {
+        "Authorization": "Bearer <你的 MCP_API_KEY>"
+      }
+    }
   }
 }
 ```
 
-## 🛠️ 开发
+无 Token 或 Token 错误的 `/mcp` 请求统一返回 `401 Unauthorized`。
 
-### 安装开发依赖
+## 工具接口
+
+### `search_words`
+
+参数：
+
+- `words`：1 至 10 个字符串，每项最长 100 字符。
+- `dict_type`：`ko-zh`（默认）或 `ko-en`。
+
+结果为结构化 MCP 内容，并保持原始输入顺序：
+
+```json
+{
+  "dict_type": "ko-zh",
+  "summary": {"total": 2, "succeeded": 1, "failed": 1},
+  "items": [
+    {
+      "index": 0,
+      "word": "사랑",
+      "success": true,
+      "entries": []
+    },
+    {
+      "index": 1,
+      "word": "",
+      "success": false,
+      "error": {
+        "code": "validation_error",
+        "message": "搜索词不能为空"
+      }
+    }
+  ]
+}
+```
+
+重复词会在同一次调用中合并为一次上游请求，再按各自输入位置返回。已知的单词级错误
+会返回稳定错误码；未预期异常不会被吞掉，会作为工具调用失败并记录完整服务日志。
+
+错误码包括：`validation_error`、`timeout`、`upstream_rate_limit`、
+`upstream_server_error`、`upstream_response_error`、`network_error` 和
+`invalid_upstream_payload`。
+
+## 本地开发
+
+需要 Python 3.12 和 [uv](https://docs.astral.sh/uv/)：
 
 ```bash
-uv sync
-pre-commit install
+uv sync --locked
+cp .env.example .env.local
+# 编辑 .env.local，填入至少 32 字节的 MCP_API_KEY
+make dev
 ```
 
-### 运行测试
+`make dev` 在 `http://127.0.0.1:3000` 启动与 Vercel 相同的 `app.py` ASGI 入口。
+
+质量检查：
 
 ```bash
-# 运行所有测试
-pytest
-
-# 测试覆盖率
-pytest --cov=src --cov-report=html
-
-# 性能测试
-pytest tests/test_performance.py -m performance
+make check
 ```
 
-### 代码质量检查
+## 运行约束
 
-```bash
-# 格式化
-ruff format src/ tests/
+- Python 3.12，Vercel Function 区域为首尔 `icn1`。
+- 单次函数最大运行 60 秒。
+- Naver 请求超时 10 秒，只对网络错误、超时、HTTP 429 和 5xx 重试一次。
+- 单次最多 10 个词、最多 5 个上游并发。
+- 不提供跨实例缓存或全局请求限流，避免在 Serverless 环境中制造错误语义。
 
-# Lint
-ruff check src/ tests/
+## License
 
-# 类型检查
-mypy src/
-
-# 或使用 Makefile
-make format
-make lint
-make type-check
-```
-
-## 🔧 故障排除
-
-### 错误类型
-
-| 错误类型 | 说明 | 常见原因 |
-|---------|------|----------|
-| `validation` | 输入验证错误 | 空字符串、过长字符串、无效字典类型 |
-| `timeout` | 请求超时 | 网络慢、超时设置过短 |
-| `upstream_rate_limit` | 上游限流 | 上游返回 429 |
-| `rate_limit` | 请求频率限制 | 超过配置的请求上限 |
-| `network_error` | 网络连接错误 | 无法连接到 API |
-| `parse_error` | 响应解析错误 | API 返回格式变化 |
-
-### 常见问题
-
-<details>
-<summary>端口被占用</summary>
-
-修改 `.env` 文件或使用环境变量：
-
-```bash
-SERVER_PORT=9000 python src/server.py
-```
-
-</details>
-
-<details>
-<summary>请求频率限制</summary>
-
-默认限制 60 请求/分钟（全局共享）。调整配置：
-
-```env
-REQUESTS_PER_MINUTE=100
-```
-
-</details>
-
-<details>
-<summary>查看详细日志</summary>
-
-```env
-LOG_LEVEL=DEBUG
-```
-
-</details>
-
-## 📄 许可证
-
-本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
-
----
-
-**开发者:** 基于 FastMCP 2.0 构建
-
-**相关链接:**
-
-- [FastMCP 文档](https://github.com/jlowin/fastmcp)
-- [Naver 辞典](https://korean.dict.naver.com/)
-- [Docker Hub 镜像](https://hub.docker.com/r/chouann/naverdictmcp)
+[MIT](LICENSE)

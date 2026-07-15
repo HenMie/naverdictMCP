@@ -1,55 +1,45 @@
-"""应用日志配置模块。
+"""Structured logging for Vercel's log collector."""
 
-提供统一的日志配置和格式化。
-"""
+from __future__ import annotations
 
+import json
 import logging
 import sys
-from typing import Optional
+from datetime import UTC, datetime
 
 
-def setup_logger(
-    name: str = "naver-dict-mcp",
-    level: Optional[str] = None
-) -> logging.Logger:
-    """
-    设置应用日志器，使用统一的格式。
-    
-    Args:
-        name: 日志器名称
-        level: 日志级别（如果提供则覆盖配置）
-        
-    Returns:
-        配置好的日志器实例
-    """
-    logger = logging.getLogger(name)
-    
-    # 避免重复添加 handler
-    if logger.handlers:
-        return logger
-    
-    # 延迟导入避免循环依赖
-    if level is None:
-        from .config import config
-        level = config.LOG_LEVEL
-    
-    # 设置日志级别
-    logger.setLevel(getattr(logging, level, logging.INFO))
-    
-    # 创建 handler
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(getattr(logging, level, logging.INFO))
-    
-    # 创建 formatter
-    formatter = logging.Formatter(
-        fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    handler.setFormatter(formatter)
-    
-    logger.addHandler(handler)
-    return logger
+class JsonFormatter(logging.Formatter):
+    """Render standard log records as one JSON object per line."""
+
+    _standard_fields = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys())
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, object] = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        payload.update(
+            {
+                key: value
+                for key, value in record.__dict__.items()
+                if key not in self._standard_fields and key not in {"message", "asctime"}
+            }
+        )
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False, default=str)
 
 
-# 全局日志器实例
-logger = setup_logger()
+def create_logger(name: str = "naver-dict-mcp") -> logging.Logger:
+    """Create an idempotently configured application logger."""
+
+    application_logger = logging.getLogger(name)
+    application_logger.setLevel(logging.INFO)
+    application_logger.propagate = False
+    if not application_logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(JsonFormatter())
+        application_logger.addHandler(handler)
+    return application_logger

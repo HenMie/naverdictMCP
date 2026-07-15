@@ -154,3 +154,7 @@ cython_debug/
 .vscode/
 *.swp
 *.swo
+
+# Vercel local state and secrets
+.vercel/
+.env.local

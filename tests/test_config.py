@@ -1,162 +1,49 @@
-"""Tests for configuration module."""
+"""Settings validation tests."""
 
 import pytest
-import os
-from unittest.mock import patch
-from importlib import reload
-import src.config
-from src.config import Config, ConfigError
+
+from src.config import ConfigError, Settings
+
+VALID_KEY = "a" * 32
 
 
-@pytest.fixture
-def reload_config_module():
-    """Fixture to reload config module and restore it after test."""
-    yield
-    # Reload module after test to restore original state
-    reload(src.config)
-    # Re-import to ensure references are updated
-    import sys
-    if 'src.config' in sys.modules:
-        reload(sys.modules['src.config'])
+def test_from_env_requires_api_key() -> None:
+    with pytest.raises(ConfigError, match="MCP_API_KEY is required"):
+        Settings.from_env({})
 
 
-class TestConfig:
-    """Tests for Config class."""
-    
-    def test_default_values(self):
-        """Test that default configuration values are set correctly."""
-        with patch.dict(os.environ, {}, clear=True):
-            config = Config()
-        
-        assert config.SERVER_HOST == "0.0.0.0"
-        assert config.SERVER_PORT == 8000
-        assert config.HTTP_TIMEOUT == 30.0
-        assert config.LOG_LEVEL == "INFO"
-        assert config.NAVER_BASE_URL == "https://korean.dict.naver.com/api3"
-    
-    def test_get_server_address(self):
-        """Test server address generation."""
-        with patch.dict(os.environ, {}, clear=True):
-            config = Config()
-            address = config.get_server_address()
-        
-        assert address == f"http://{config.SERVER_HOST}:{config.SERVER_PORT}"
-        assert "http://0.0.0.0:8000" == address
-    
-    @patch.dict(os.environ, {
-        "SERVER_HOST": "127.0.0.1",
-        "SERVER_PORT": "9000",
-        "HTTP_TIMEOUT": "60.0",
-        "LOG_LEVEL": "DEBUG"
-    })
-    def test_environment_variable_override(self, reload_config_module):
-        """Test that environment variables override defaults."""
-        # Need to reload the module to pick up new env vars
-        from importlib import reload
-        import src.config as config_module
-        reload(config_module)
-        
-        config = config_module.Config()
-        
-        assert config.SERVER_HOST == "127.0.0.1"
-        assert config.SERVER_PORT == 9000
-        assert config.HTTP_TIMEOUT == 60.0
-        assert config.LOG_LEVEL == "DEBUG"
+def test_from_env_accepts_single_deployment_value() -> None:
+    settings = Settings.from_env({"MCP_API_KEY": VALID_KEY, "IGNORED": "value"})
+    assert settings.mcp_api_key == VALID_KEY
+    assert settings.naver_base_url == "https://korean.dict.naver.com/api3"
 
 
-class TestConfigValidation:
-    """Tests for configuration validation."""
-    
-    def test_invalid_port_too_low(self):
-        """Test that port number validation catches values too low."""
-        config = Config(validate=False)
-        config.SERVER_PORT = 0
-        with pytest.raises(src.config.ConfigError):
-            config.validate()
-    
-    def test_invalid_port_too_high(self):
-        """Test that port number validation catches values too high."""
-        config = Config(validate=False)
-        config.SERVER_PORT = 70000
-        with pytest.raises(src.config.ConfigError):
-            config.validate()
-    
-    def test_valid_port_range(self):
-        """Test that valid port numbers pass validation."""
-        config = Config(validate=False)
-        
-        # Test boundary values
-        config.SERVER_PORT = 1
-        config.validate()  # Should not raise
-        
-        config.SERVER_PORT = 65535
-        config.validate()  # Should not raise
-        
-        config.SERVER_PORT = 8000
-        config.validate()  # Should not raise
-    
-    def test_invalid_timeout_zero(self):
-        """Test that zero timeout is rejected."""
-        config = Config(validate=False)
-        config.HTTP_TIMEOUT = 0
-        with pytest.raises(src.config.ConfigError):
-            config.validate()
-    
-    def test_invalid_timeout_negative(self):
-        """Test that negative timeout is rejected."""
-        config = Config(validate=False)
-        config.HTTP_TIMEOUT = -10
-        with pytest.raises(src.config.ConfigError):
-            config.validate()
-    
-    def test_timeout_warning_too_long(self):
-        """Test that very long timeouts trigger a warning."""
-        config = Config(validate=False)
-        config.HTTP_TIMEOUT = 400
-        with pytest.raises(src.config.ConfigError):
-            config.validate()
-    
-    def test_valid_timeout_range(self):
-        """Test that reasonable timeout values pass validation."""
-        config = Config(validate=False)
-        
-        config.HTTP_TIMEOUT = 1.0
-        config.validate()  # Should not raise
-        
-        config.HTTP_TIMEOUT = 30.0
-        config.validate()  # Should not raise
-        
-        config.HTTP_TIMEOUT = 300.0
-        config.validate()  # Should not raise
-    
-    def test_invalid_log_level(self):
-        """Test that invalid log levels are rejected."""
-        config = Config(validate=False)
-        config.LOG_LEVEL = "INVALID"
-        with pytest.raises(src.config.ConfigError):
-            config.validate()
-    
-    def test_valid_log_levels(self):
-        """Test that all valid log levels pass validation."""
-        config = Config(validate=False)
-        
-        for level in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
-            config.LOG_LEVEL = level
-            config.validate()  # Should not raise
-    
-    def test_invalid_url_format(self):
-        """Test that invalid URL formats are rejected."""
-        config = Config(validate=False)
-        config.NAVER_BASE_URL = "not-a-valid-url"
-        with pytest.raises(src.config.ConfigError):
-            config.validate()
-    
-    def test_valid_url_formats(self):
-        """Test that valid URL formats pass validation."""
-        config = Config(validate=False)
-        
-        config.NAVER_BASE_URL = "http://example.com"
-        config.validate()  # Should not raise
-        
-        config.NAVER_BASE_URL = "https://example.com/api"
-        config.validate()  # Should not raise
+@pytest.mark.parametrize("key", ["", "short", "한" * 10])
+def test_api_key_must_be_at_least_32_bytes(key: str) -> None:
+    with pytest.raises(ConfigError, match="at least 32 bytes"):
+        Settings(mcp_api_key=key)
+
+
+@pytest.mark.parametrize("url", ["", "not-a-url", "ftp://example.com"])
+def test_base_url_must_be_http(url: str) -> None:
+    with pytest.raises(ConfigError, match="absolute HTTP"):
+        Settings(mcp_api_key=VALID_KEY, naver_base_url=url)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"http_timeout_seconds": 0}, "greater than zero"),
+        ({"batch_concurrency": 0}, "between 1 and 10"),
+        ({"batch_concurrency": 11}, "between 1 and 10"),
+        ({"retry_attempts": 3}, "must be 1 or 2"),
+        ({"retry_base_delay_seconds": -1}, "cannot be negative"),
+        (
+            {"retry_base_delay_seconds": 1, "retry_max_delay_seconds": 0.5},
+            "cannot be lower",
+        ),
+    ],
+)
+def test_operational_settings_are_validated(overrides: dict[str, object], message: str) -> None:
+    with pytest.raises(ConfigError, match=message):
+        Settings(mcp_api_key=VALID_KEY, **overrides)  # type: ignore[arg-type]
