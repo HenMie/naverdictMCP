@@ -1,6 +1,6 @@
 [project]
 name = "naver-dict-mcp"
-version = "2.0.0"
+version = "1.1.0"
 description = "Stateless Naver Dictionary MCP server for one-click Vercel deployment"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
